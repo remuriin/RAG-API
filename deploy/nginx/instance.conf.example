@@ -1,0 +1,18 @@
+# Route for one RAG instance.
+# Copy to /etc/nginx/rag-instances/<instanceId>.conf, replace INSTANCE_ID and PORT, then:
+#   sudo nginx -t && sudo systemctl reload nginx
+
+location /i/INSTANCE_ID/ {
+    limit_req zone=rag_api burst=10 nodelay;
+
+    # the trailing slash strips /i/INSTANCE_ID, so the service sees /health, /documents, /query
+    proxy_pass http://127.0.0.1:PORT/;
+
+    # uploads wait for chunking and embedding before replying
+    proxy_read_timeout 300s;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}

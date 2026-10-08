@@ -1,0 +1,30 @@
+# Template unit: one service per RAG instance.
+# Install as /etc/systemd/system/rag@.service, then start with: systemctl enable --now rag@<instanceId>
+# %i is the part after the "@", i.e. the instance id.
+
+[Unit]
+Description=RAG instance %i
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rag
+Group=rag
+WorkingDirectory=/opt/rag
+# Read by systemd as root before dropping to the rag user, so the file can stay root-only (chmod 600)
+EnvironmentFile=/etc/rag/%i.env
+Environment=NODE_ENV=production
+# Adjust if `which node` prints a different path
+ExecStart=/usr/bin/node dist/src/server.js
+Restart=on-failure
+RestartSec=5
+
+# The service only reads its code and talks to Postgres and Gemini over the network
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
