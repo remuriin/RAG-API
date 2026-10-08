@@ -11,12 +11,18 @@
     "dev:create-instance": "tsx scripts/dev-create-instance.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/server.js",
-    "dev:server": "tsx watch src/server.ts"
+    "start:management": "node dist/src/management/server.js",
+    "start:agent": "node dist/src/agent/main.js",
+    "dev:server": "tsx watch src/server.ts",
+    "dev:management": "tsx watch src/management/server.ts",
+    "dev:agent": "tsx src/agent/main.ts",
+    "dev:firebase-token": "tsx scripts/dev-firebase-token.ts"
   },
   "dependencies": {
     "@google/genai": "^2.27.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "firebase-admin": "^13.10.0",
     "pg": "^8.13.0"
   },
   "devDependencies": {

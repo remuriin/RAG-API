@@ -22,7 +22,8 @@ async function main() {
     const next = await client.query("SELECT COALESCE(MAX(port) + 1, $1::int) AS port FROM instances", [FIRST_PORT]);
     port = next.rows[0].port;
     await client.query(
-      "INSERT INTO instances (id, owner_uid, port, name, product_name) VALUES ($1, 'dev', $2, $3, $4)",
+      // 'active' so the control agent leaves it alone: this instance is run by hand
+      "INSERT INTO instances (id, owner_uid, port, name, product_name, status) VALUES ($1, 'dev', $2, $3, $4, 'active')",
       [id, port, name, productName]
     );
     await client.query("INSERT INTO api_keys (instance_id, key_hash, key_prefix) VALUES ($1, $2, $3)", [

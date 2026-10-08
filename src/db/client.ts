@@ -7,17 +7,38 @@ export const pool = new pg.Pool({
 export const SCHEMA_SQL = `
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- One row per signed-in user (Firebase Auth uid). Passwords live in Firebase, never here.
+CREATE TABLE IF NOT EXISTS clients (
+  uid TEXT PRIMARY KEY,
+  email TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS instances (
   id UUID PRIMARY KEY,
   owner_uid TEXT NOT NULL,
-  port INT NOT NULL UNIQUE,
+  port INT UNIQUE,
   name TEXT,
   product_name TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('pending', 'active', 'failed', 'deleting')),
+  error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- name is the label for whoever manages the instance; product_name is what the assistant calls itself
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS name TEXT;
+
+-- status is the only channel between the management API and the control agent:
+-- 'pending' and 'deleting' are the agent's to-do signals, 'active' and 'failed' are its results.
+-- Rows that existed before this column were provisioned by hand, hence the 'active' default.
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+  CHECK (status IN ('pending', 'active', 'failed', 'deleting'));
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS error_message TEXT;
+
+-- the agent assigns the port while provisioning
+ALTER TABLE instances ALTER COLUMN port DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS instances_owner_idx ON instances (owner_uid);
 
 CREATE TABLE IF NOT EXISTS api_keys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

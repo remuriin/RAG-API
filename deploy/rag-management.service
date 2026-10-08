@@ -1,0 +1,26 @@
+# Management API: the dashboard's backend (login check, service records, API keys).
+# Install as /etc/systemd/system/rag-management.service
+
+[Unit]
+Description=RAG management API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rag
+Group=rag
+WorkingDirectory=/opt/rag
+EnvironmentFile=/etc/rag-control/management.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/src/management/server.js
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

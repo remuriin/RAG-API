@@ -41,9 +41,113 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d rag.140-245-60-8.sslip.io
 ```
 
-## Adding an instance
+## Control plane (management API + control agent)
 
-The instance must already exist in the `instances` table with an API key. Until the management API and control agent exist, create it from a machine that has the repo and database access:
+With these two running, services are created and deleted through the management API and nothing below "Adding an instance by hand" is needed any more.
+
+- **Management API** (`rag-management`): verifies Firebase logins, writes service requests, issues API keys. Public at `https://rag.140-245-60-8.sslip.io/api/`.
+- **Control agent** (`rag-agent`): no port. Polls the `instances` table and does the env file / systemd / nginx work for `pending` and `deleting` rows.
+
+Run the schema migration first (`npm run db:migrate` from a machine with the repo's `.env`).
+
+### 1. Update the code
+
+```bash
+cd /opt/rag
+sudo git pull
+sudo npm ci
+sudo npm run build
+```
+
+### 2. Agent user and its permissions
+
+```bash
+sudo useradd --system --home /opt/rag --shell /usr/sbin/nologin ragagent
+sudo chown -R ragagent:ragagent /etc/rag /etc/nginx/rag-instances
+sudo chmod 700 /etc/rag
+sudo install -o root -g root -m 755 /opt/rag/deploy/rag-ctl /usr/local/sbin/rag-ctl
+sudo install -o root -g root -m 440 /opt/rag/deploy/sudoers-rag-agent /etc/sudoers.d/rag-agent
+sudo visudo -cf /etc/sudoers.d/rag-agent
+```
+
+The agent owns the two folders it writes to. Its only root access is `sudo /usr/local/sbin/rag-ctl`, which accepts `start <uuid>`, `stop <uuid>` and `reload-nginx`.
+
+### 3. Env files
+
+```bash
+sudo mkdir -p /etc/rag-control && sudo chmod 700 /etc/rag-control
+sudo nano /etc/rag-control/management.env
+sudo nano /etc/rag-control/agent.env
+sudo chmod 600 /etc/rag-control/management.env /etc/rag-control/agent.env
+```
+
+`management.env`:
+
+```
+DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
+FIREBASE_PROJECT_ID=rag-service-remuriin
+PUBLIC_BASE_URL=https://rag.140-245-60-8.sslip.io
+```
+
+`agent.env` (the database URL and Gemini key here are what the agent writes into each new instance's env file):
+
+```
+DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
+GEMINI_API_KEY=YOUR_KEY
+```
+
+### 4. Services
+
+```bash
+sudo cp /opt/rag/deploy/rag-management.service /opt/rag/deploy/rag-agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rag-management rag-agent
+systemctl status rag-management rag-agent --no-pager
+curl -i http://127.0.0.1:4000/api/me      # 401 "Missing login token" means it is up
+```
+
+### 5. nginx route for the API
+
+Certbot edited the installed site file, so add the block by hand instead of copying `deploy/nginx/rag.conf` over it:
+
+```bash
+sudo nano /etc/nginx/sites-available/rag.conf
+```
+
+Inside the `server { ... }` block that contains `listen 443 ssl`, next to the `include /etc/nginx/rag-instances/*.conf;` line, add:
+
+```nginx
+    location /api/ {
+        limit_req zone=rag_api burst=10 nodelay;
+        proxy_pass http://127.0.0.1:4000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Using it
+
+From a machine with the repo's `.env` (which has the test account), `npm run dev:firebase-token` prints a login token valid for an hour. With it as `TOKEN`:
+
+```bash
+API=https://rag.140-245-60-8.sslip.io/api
+curl -X POST $API/instances -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"My service","productName":"Acme"}'
+curl $API/instances -H "Authorization: Bearer $TOKEN"                 # status goes pending -> active
+curl -X POST $API/instances/<id>/key -H "Authorization: Bearer $TOKEN"   # the API key, shown once
+curl -X DELETE $API/instances/<id> -H "Authorization: Bearer $TOKEN"
+```
+
+Logs: `journalctl -u rag-agent -f` and `journalctl -u rag-management -f`.
+
+## Adding an instance by hand
+
+Only needed without the control plane. The instance must already exist in the `instances` table with an API key; create it from a machine that has the repo and database access:
 
 ```bash
 npm run dev:create-instance -- "<instance name>" ["<product name>"]
@@ -100,7 +204,7 @@ cd /opt/rag
 sudo git pull
 sudo npm ci
 sudo npm run build
-sudo systemctl restart 'rag@*'
+sudo systemctl restart 'rag@*' rag-management rag-agent
 ```
 
 If the update changes the database schema, run `npm run db:migrate` (from a machine with the repo's `.env`) before restarting.

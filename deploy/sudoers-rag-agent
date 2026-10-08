@@ -1,0 +1,3 @@
+# Install as /etc/sudoers.d/rag-agent (mode 440), and check it with: sudo visudo -cf /etc/sudoers.d/rag-agent
+# The control agent may run the rag-ctl helper as root, and nothing else. rag-ctl validates its own arguments.
+ragagent ALL=(root) NOPASSWD: /usr/local/sbin/rag-ctl

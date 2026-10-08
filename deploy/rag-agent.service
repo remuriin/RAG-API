@@ -1,0 +1,23 @@
+# Control agent: watches the instances table and sets services up / tears them down.
+# No port, no endpoints. Install as /etc/systemd/system/rag-agent.service
+
+[Unit]
+Description=RAG control agent
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Owns /etc/rag and /etc/nginx/rag-instances; reaches root only through sudo /usr/local/sbin/rag-ctl.
+# No systemd sandboxing here: it would also apply to rag-ctl and break `nginx -t`.
+User=ragagent
+Group=ragagent
+WorkingDirectory=/opt/rag
+EnvironmentFile=/etc/rag-control/agent.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/src/agent/main.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

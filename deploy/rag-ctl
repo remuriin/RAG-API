@@ -1,0 +1,47 @@
+#!/bin/bash
+# The only root actions the control agent can perform. Install root-owned at /usr/local/sbin/rag-ctl (mode 755);
+# sudoers lets the ragagent user run this script and nothing else.
+#
+#   rag-ctl start <instanceId>     enable and (re)start rag@<instanceId>
+#   rag-ctl stop <instanceId>      stop and disable rag@<instanceId>
+#   rag-ctl reload-nginx           test the nginx config, reload only if the test passes
+set -euo pipefail
+
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+require_uuid() {
+  if [[ $# -ne 1 || ! "$1" =~ $UUID_RE ]]; then
+    echo "rag-ctl: expected one lowercase UUID" >&2
+    exit 2
+  fi
+}
+
+action="${1:-}"
+shift || true
+
+case "$action" in
+  start)
+    require_uuid "$@"
+    systemctl enable "rag@$1" >/dev/null 2>&1
+    # restart rather than start, so a re-run after an interrupted setup picks up the current env file
+    systemctl restart "rag@$1"
+    ;;
+  stop)
+    require_uuid "$@"
+    # an instance that was never started is not an error
+    systemctl disable --now "rag@$1" >/dev/null 2>&1 || true
+    systemctl reset-failed "rag@$1" >/dev/null 2>&1 || true
+    ;;
+  reload-nginx)
+    if [[ $# -ne 0 ]]; then
+      echo "rag-ctl: reload-nginx takes no arguments" >&2
+      exit 2
+    fi
+    nginx -t
+    systemctl reload nginx
+    ;;
+  *)
+    echo "usage: rag-ctl start <instanceId> | stop <instanceId> | reload-nginx" >&2
+    exit 2
+    ;;
+esac
