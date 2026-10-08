@@ -1,0 +1,29 @@
+{
+  "name": "tricycall-rag",
+  "version": "0.1.0",
+  "description": "RAG pipeline for the Tricycall support assistant",
+  "type": "module",
+  "scripts": {
+    "ingest": "tsx scripts/ingest.ts",
+    "ask": "tsx scripts/ask.ts",
+    "eval": "tsx scripts/eval.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "dev:create-instance": "tsx scripts/dev-create-instance.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
+    "dev:server": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.27.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

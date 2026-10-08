@@ -1,0 +1,57 @@
+import pg from "pg";
+
+export const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+export const SCHEMA_SQL = `
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS instances (
+  id UUID PRIMARY KEY,
+  owner_uid TEXT NOT NULL,
+  port INT NOT NULL UNIQUE,
+  product_name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  instance_id UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  key_hash TEXT NOT NULL UNIQUE,
+  key_prefix TEXT NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  instance_id UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('processing', 'ready', 'failed')),
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- at most one live version of a document per instance
+CREATE UNIQUE INDEX IF NOT EXISTS documents_ready_source_idx
+  ON documents (instance_id, source) WHERE status = 'ready';
+
+CREATE INDEX IF NOT EXISTS documents_instance_idx ON documents (instance_id);
+
+CREATE TABLE IF NOT EXISTS chunks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  instance_id UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  chunk_index INT NOT NULL,
+  heading_path TEXT NOT NULL,
+  chunk_text TEXT NOT NULL,
+  embedding VECTOR(768) NOT NULL
+);
+
+-- No ANN index on purpose: instances share this table, and an approximate index
+-- filters by instance_id after the search, which can starve a small instance of results.
+CREATE INDEX IF NOT EXISTS chunks_instance_idx ON chunks (instance_id);
+CREATE INDEX IF NOT EXISTS chunks_document_idx ON chunks (document_id);
+`;
