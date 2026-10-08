@@ -11,9 +11,13 @@ CREATE TABLE IF NOT EXISTS instances (
   id UUID PRIMARY KEY,
   owner_uid TEXT NOT NULL,
   port INT NOT NULL UNIQUE,
+  name TEXT,
   product_name TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- name is the label for whoever manages the instance; product_name is what the assistant calls itself
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS name TEXT;
 
 CREATE TABLE IF NOT EXISTS api_keys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

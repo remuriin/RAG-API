@@ -1,7 +1,7 @@
 {
-  "name": "tricycall-rag",
+  "name": "rag-instance-api",
   "version": "0.1.0",
-  "description": "RAG pipeline for the Tricycall support assistant",
+  "description": "RAG instance API: per-client markdown ingestion and question answering with pgvector and Gemini",
   "type": "module",
   "scripts": {
     "ingest": "tsx scripts/ingest.ts",

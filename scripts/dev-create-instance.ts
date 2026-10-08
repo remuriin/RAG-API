@@ -7,7 +7,11 @@ import { generateApiKey } from "../src/auth/keys.js";
 const FIRST_PORT = 4101;
 
 async function main() {
-  const productName = process.argv.slice(2).join(" ").trim() || null;
+  // Usage: npm run dev:create-instance -- "<instance name>" ["<product name>"]
+  const [name, productName = null] = process.argv.slice(2).map((a) => a.trim());
+  if (!name) {
+    throw new Error('Usage: npm run dev:create-instance -- "<instance name>" ["<product name>"]');
+  }
   const id = randomUUID();
   const { key, hash, prefix } = generateApiKey();
 
@@ -18,8 +22,8 @@ async function main() {
     const next = await client.query("SELECT COALESCE(MAX(port) + 1, $1::int) AS port FROM instances", [FIRST_PORT]);
     port = next.rows[0].port;
     await client.query(
-      "INSERT INTO instances (id, owner_uid, port, product_name) VALUES ($1, 'dev', $2, $3)",
-      [id, port, productName]
+      "INSERT INTO instances (id, owner_uid, port, name, product_name) VALUES ($1, 'dev', $2, $3, $4)",
+      [id, port, name, productName]
     );
     await client.query("INSERT INTO api_keys (instance_id, key_hash, key_prefix) VALUES ($1, $2, $3)", [
       id,
@@ -34,7 +38,7 @@ async function main() {
     client.release();
   }
 
-  console.log(`Created instance${productName ? ` for "${productName}"` : ""}.\n`);
+  console.log(`Created instance "${name}"${productName ? ` (assistant persona: ${productName})` : ""}.\n`);
   console.log("Add to .env to run this instance:");
   console.log(`INSTANCE_ID=${id}`);
   console.log(`PORT=${port}\n`);
