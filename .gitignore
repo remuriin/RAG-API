@@ -11,3 +11,6 @@ dist/
 
 # local-only helpers that contain dev API keys
 local/
+
+# my own design notes, kept local only
+RAG-as-a-service.md
