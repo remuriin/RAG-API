@@ -35,6 +35,7 @@ sudo mkdir -p /etc/rag && sudo chmod 700 /etc/rag
 
 ```bash
 sudo mkdir -p /etc/nginx/rag-instances
+sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
 sudo cp /opt/rag/deploy/nginx/rag.conf /etc/nginx/sites-available/rag.conf
 sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
 sudo nginx -t && sudo systemctl reload nginx
@@ -108,26 +109,12 @@ curl -i http://127.0.0.1:4000/api/me      # 401 "Missing login token" means it i
 
 ### 5. nginx route for the API
 
-Certbot edited the installed site file, so add the block by hand instead of copying `deploy/nginx/rag.conf` over it:
+Certbot edited the installed site file, so don't copy `deploy/nginx/rag.conf` over it. The route lives in its own snippet file; the site file only needs one `include` line, added right after the line that includes the instance routes:
 
 ```bash
-sudo nano /etc/nginx/sites-available/rag.conf
-```
-
-Inside the `server { ... }` block that contains `listen 443 ssl`, next to the `include /etc/nginx/rag-instances/*.conf;` line, add:
-
-```nginx
-    location /api/ {
-        limit_req zone=rag_api burst=10 nodelay;
-        proxy_pass http://127.0.0.1:4000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-```
-
-```bash
+sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
+sudo sed -i '/rag-instances\/\*\.conf;/a\    include /etc/nginx/snippets/rag-api.conf;' /etc/nginx/sites-available/rag.conf
+grep -n "include" /etc/nginx/sites-available/rag.conf     # the new line should appear exactly once
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
