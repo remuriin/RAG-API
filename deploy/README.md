@@ -221,3 +221,23 @@ If the update changes the database schema, run `npm run db:migrate` (from a mach
 systemctl list-units 'rag@*'
 journalctl -u rag@$ID -f
 ```
+
+## Database backups
+
+A daily dump of the `rag_service` database, kept for 7 days in `/var/backups/rag`.
+
+```bash
+sudo install -o root -g root -m 755 /opt/rag/deploy/rag-backup /usr/local/sbin/rag-backup
+sudo install -d -o postgres -g postgres -m 700 /var/backups/rag
+sudo install -o root -g root -m 644 /opt/rag/deploy/rag-backup.cron /etc/cron.d/rag-backup
+sudo -u postgres /usr/local/sbin/rag-backup      # run it once now
+sudo ls -lh /var/backups/rag
+```
+
+It runs at 18:15 UTC (2:15 AM in the Philippines). The dumps are on the same disk as the database, so they cover mistakes and bad deploys but not the loss of the VPS; copy one off the server now and then for that.
+
+Restore:
+
+```bash
+sudo -u postgres pg_restore --clean --if-exists -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
+```

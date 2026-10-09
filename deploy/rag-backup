@@ -1,0 +1,21 @@
+#!/bin/bash
+# Nightly backup of the rag_service database. Install root-owned at /usr/local/sbin/rag-backup (mode 755);
+# deploy/rag-backup.cron runs it as the postgres user.
+#
+# Keeps the last 7 daily dumps in /var/backups/rag. These protect against mistakes and bad deploys;
+# they sit on the same disk as the database, so they do NOT protect against losing the VPS itself.
+#
+# Restore one with:
+#   sudo -u postgres pg_restore --clean --if-exists -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
+set -euo pipefail
+
+DIR=/var/backups/rag
+KEEP_DAYS=7
+FILE="$DIR/rag_service-$(date +%F).dump"
+
+# write to a temp name first, so a failed dump never leaves a half file that looks like a backup
+pg_dump --format=custom --file="$FILE.tmp" rag_service
+mv "$FILE.tmp" "$FILE"
+
+find "$DIR" -name 'rag_service-*.dump' -mtime +"$KEEP_DAYS" -delete
+find "$DIR" -name '*.tmp' -mtime +1 -delete

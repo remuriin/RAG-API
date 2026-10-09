@@ -1,0 +1,3 @@
+# Install as /etc/cron.d/rag-backup (root-owned, mode 644).
+# Runs the database backup every day at 18:15 UTC, which is 2:15 AM in the Philippines.
+15 18 * * * postgres /usr/local/sbin/rag-backup
