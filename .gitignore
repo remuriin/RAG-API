@@ -8,3 +8,6 @@ dist/
 
 *.log
 .DS_Store
+
+# local-only helpers that contain dev API keys
+local/

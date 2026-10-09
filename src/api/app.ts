@@ -117,7 +117,8 @@ export function createApp() {
     "/query",
     express.json({ limit: "100kb" }),
     wrap(async (req, res) => {
-      const { question, topK = DEFAULT_TOP_K } = req.body ?? {};
+      // markdown: the caller's app renders markdown; otherwise answers are plain text
+      const { question, topK = DEFAULT_TOP_K, markdown = false } = req.body ?? {};
 
       if (typeof question !== "string" || !question.trim()) {
         res.status(400).json({ error: '"question" is required' });
@@ -132,8 +133,15 @@ export function createApp() {
         return;
       }
 
+      if (typeof markdown !== "boolean") {
+        res.status(400).json({ error: '"markdown" must be true or false' });
+        return;
+      }
+
       const chunks = await retrieveRelevantChunks(question.trim(), topK);
-      res.json(await generateAnswer(question.trim(), chunks, res.locals.productName));
+      res.json(
+        await generateAnswer(question.trim(), chunks, { productName: res.locals.productName, markdown })
+      );
     })
   );
 

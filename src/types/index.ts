@@ -19,6 +19,7 @@ export interface RetrievedChunk {
 export interface RagAnswer {
   answer: string;
   sources: { source: string; heading: string }[];
+  answered: boolean; // false for refusals, greetings and "here's what I can help with"
 }
 
 export interface DocumentSummary {

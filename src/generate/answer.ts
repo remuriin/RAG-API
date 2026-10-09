@@ -1,55 +1,53 @@
 import { GoogleGenAI } from "@google/genai";
+import { listTopics } from "../ingest/store.js";
 import { withRetry } from "../util/retry.js";
 import type { RetrievedChunk, RagAnswer } from "../types/index.js";
+import {
+  answerMessage,
+  answerSystemInstruction,
+  noMatchMessage,
+  noMatchSystemInstruction,
+  type PromptOptions,
+} from "./prompts.js";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const CHAT_MODEL = "gemini-3.1-flash-lite";
 
 const SIMILARITY_FLOOR = 0.625;
+const TEMPERATURE = 0.2; // steady wording from run to run
+
+const FALLBACK_ANSWER = "I don't have info on that yet.";
+
+// One or more [n] markers in a row, with the spaces and commas between them, so that
+// "city [1], [2]." becomes "city." and not "city,."
+const CITATION_RUN = /\s*\[\d+(?:\s*,\s*\d+)*\](?:\s*,?\s*\[\d+(?:\s*,\s*\d+)*\])*/g;
 
 export async function generateAnswer(
   question: string,
   chunks: RetrievedChunk[],
-  productName?: string | null,
+  options: PromptOptions = {},
 ): Promise<RagAnswer> {
   const usable = chunks.filter((c) => c.similarity >= SIMILARITY_FLOOR);
 
-  if (usable.length === 0) {
-    return {
-      answer: "I don't have info on that yet.",
-      sources: [],
-    };
-  }
+  return usable.length === 0
+    ? replyWithoutMatch(question, options)
+    : answerFromChunks(question, usable, options);
+}
 
-  const context = usable
-    .map((c, i) => `[${i + 1}] (${c.source} — ${c.headingPath})\n${c.content}`)
-    .join("\n\n");
-
-  const identity = productName ? `the ${productName} support assistant` : "a support assistant";
-  const otherCompanyRule = productName
-    ? `\n    - If the question names a different company, app, or service, start by saying you can only help with ${productName}, e.g. "I can only help with ${productName}, so I can't speak to that one." Then, if relevant, offer the ${productName} equivalent.`
-    : "";
-
-  const prompt = `You are ${identity}, speaking directly to the person asking. Answer using ONLY the information below.
-
-    Rules for your tone:
-    - Never say "the context," "the provided information," "the documents," or anything implying you were handed material to read from. Just answer as if you know it.
-    - If something isn't covered, say so plainly and naturally, e.g. "I don't have that info yet" or "That's not something I can confirm right now".${otherCompanyRule}
-    - When asked whether something is possible or allowed, answer yes or no only if the information below states that exact thing directly. Related details are not enough: being able to do something similar does not mean the thing asked about is supported. If it isn't stated, say you can't confirm it. Never combine separate pieces of information to suggest a feature exists.
-    - Be concise and direct, like a real support reply, not a research summary.
-
-    Information:
-    ${context}
-
-    Question: ${question}
-
-    Answer now, in that voice. Cite with [number] markers matching the list above whenever you use information from it, even if it's only one source. If you can't answer, don't cite anything.`;
-
+async function answerFromChunks(
+  question: string,
+  usable: RetrievedChunk[],
+  options: PromptOptions,
+): Promise<RagAnswer> {
   const result = await withRetry(
     () =>
       ai.models.generateContent({
         model: CHAT_MODEL,
-        contents: prompt,
+        contents: answerMessage(question, usable),
+        config: {
+          systemInstruction: answerSystemInstruction(options),
+          temperature: TEMPERATURE,
+        },
       }),
     "generation",
   );
@@ -62,20 +60,48 @@ export async function generateAnswer(
     ),
   );
 
-  const cleanAnswer = text.replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, "").trim();
+  const cleanAnswer = text.replace(CITATION_RUN, "").trim();
 
-  if (cited.size === 0) {
-    // Model made no citations at all — treat as a refusal/non-answer, show no sources
-    return { answer: cleanAnswer, sources: [] };
-  }
-
+  // No citations at all means the model could not answer from the passages: a refusal, with no sources
   const citedChunks = usable.filter((_, i) => cited.has(i + 1));
 
   return {
-    answer: cleanAnswer,
+    answer: cleanAnswer || FALLBACK_ANSWER,
     sources: citedChunks.map((c) => ({
       source: c.source,
       heading: c.headingPath,
     })),
+    answered: citedChunks.length > 0,
   };
+}
+
+// Nothing in the files is close enough to the message. The model may greet or say what it can
+// help with, knowing only the topic names; it is never shown document text on this path.
+async function replyWithoutMatch(question: string, options: PromptOptions): Promise<RagAnswer> {
+  const fallback: RagAnswer = { answer: FALLBACK_ANSWER, sources: [], answered: false };
+
+  try {
+    const topics = await listTopics();
+    if (topics.length === 0) return fallback;
+
+    const result = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model: CHAT_MODEL,
+          contents: noMatchMessage(question, topics),
+          config: {
+            systemInstruction: noMatchSystemInstruction(options),
+            temperature: TEMPERATURE,
+          },
+        }),
+      "generation",
+    );
+
+    const text = (result.text ?? "").trim();
+    return text ? { answer: text, sources: [], answered: false } : fallback;
+  } catch (err) {
+    // A polite non-answer is better than an error for a message that had no answer anyway
+    console.warn("no-match reply failed, using the fixed line:", err instanceof Error ? err.message : err);
+    return fallback;
+  }
 }

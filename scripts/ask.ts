@@ -21,7 +21,7 @@ async function main() {
     }))
   );
 
-  const result = await generateAnswer(question, chunks, productName);
+  const result = await generateAnswer(question, chunks, { productName });
 
   console.log("\nAnswer:\n" + result.answer);
   console.log("\nSources:", result.sources.map((s) => `${s.source} (${s.heading})`).join(", ") || "none");

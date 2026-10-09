@@ -91,6 +91,29 @@ export async function listDocuments(): Promise<DocumentSummary[]> {
   }));
 }
 
+const MAX_TOPICS = 30;
+
+// One title per stored file: its top-level heading, or the file name when it has none.
+// Tells the assistant what this instance can be asked about without showing it any content.
+export async function listTopics(): Promise<string[]> {
+  const result = await pool.query(
+    `SELECT DISTINCT ON (d.id) d.source, c.heading_path
+     FROM documents d
+     JOIN chunks c ON c.document_id = d.id
+     WHERE d.instance_id = $1 AND d.status = 'ready'
+     ORDER BY d.id, c.chunk_index`,
+    [INSTANCE_ID]
+  );
+
+  const titles = result.rows.map((row) => {
+    const title = String(row.heading_path).split(" > ")[0].trim();
+    // "Introduction" is the chunker's placeholder for text that sits above any heading
+    return title && title !== "Introduction" ? title : String(row.source).replace(/\.md$/i, "").replace(/[-_]+/g, " ");
+  });
+
+  return [...new Set(titles)].sort().slice(0, MAX_TOPICS);
+}
+
 export async function deleteDocument(source: string): Promise<boolean> {
   const result = await pool.query("DELETE FROM documents WHERE instance_id = $1 AND source = $2", [
     INSTANCE_ID,
