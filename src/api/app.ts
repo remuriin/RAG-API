@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { requireApiKey } from "../auth/middleware.js";
 import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
+import { recordQuery } from "../db/stats.js";
 import { generateAnswer } from "../generate/answer.js";
 import { DocumentExistsError, EmptyDocumentError, ingestDocument } from "../ingest/pipeline.js";
 import { deleteDocument, listDocuments } from "../ingest/store.js";
@@ -139,9 +140,15 @@ export function createApp() {
       }
 
       const chunks = await retrieveRelevantChunks(question.trim(), topK);
-      res.json(
-        await generateAnswer(question.trim(), chunks, { productName: res.locals.productName, markdown })
-      );
+      const answer = await generateAnswer(question.trim(), chunks, {
+        productName: res.locals.productName,
+        markdown,
+      });
+
+      // Stats must never fail or delay a reply
+      recordQuery().catch((err) => console.warn("could not record the query count:", err?.message ?? err));
+
+      res.json(answer);
     })
   );
 

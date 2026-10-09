@@ -8,6 +8,7 @@ import {
   ENV_DIR,
   GEMINI_API_KEY,
   INSTANCE_DATABASE_URL,
+  INTERNAL_SECRET,
   NGINX_DIR,
   RAG_CTL,
   ROUTE_TEMPLATE,
@@ -26,17 +27,33 @@ function assertUuid(id: string): void {
 const envPath = (id: string) => join(ENV_DIR, `${id}.env`);
 const routePath = (id: string) => join(NGINX_DIR, `${id}.conf`);
 
-export async function writeEnvFile(id: string, port: number): Promise<void> {
-  assertUuid(id);
+function envFileContent(id: string, port: number): string {
+  // a dry run leaves no secrets lying around in the temp folder
+  const secret = (value: string) => (DRY_RUN ? "<omitted in dry run>" : value);
   const lines = [
     `INSTANCE_ID=${id}`,
     `PORT=${port}`,
-    // a dry run leaves no secrets lying around in the temp folder
-    `DATABASE_URL=${DRY_RUN ? "<omitted in dry run>" : INSTANCE_DATABASE_URL}`,
-    `GEMINI_API_KEY=${DRY_RUN ? "<omitted in dry run>" : GEMINI_API_KEY}`,
+    `DATABASE_URL=${secret(INSTANCE_DATABASE_URL)}`,
+    `GEMINI_API_KEY=${secret(GEMINI_API_KEY)}`,
   ];
+  if (INTERNAL_SECRET) lines.push(`INTERNAL_SECRET=${secret(INTERNAL_SECRET)}`);
+  return lines.join("\n") + "\n";
+}
+
+export async function writeEnvFile(id: string, port: number): Promise<void> {
+  assertUuid(id);
   await mkdir(ENV_DIR, { recursive: true });
-  await writeFile(envPath(id), lines.join("\n") + "\n", { mode: 0o600 });
+  await writeFile(envPath(id), envFileContent(id, port), { mode: 0o600 });
+}
+
+// Brings an existing env file up to date with the agent's current settings.
+// Returns true if the file had to be rewritten (the service then needs a restart to pick it up).
+export async function syncEnvFile(id: string, port: number): Promise<boolean> {
+  assertUuid(id);
+  const current = await readFile(envPath(id), "utf-8").catch(() => null);
+  if (current === envFileContent(id, port)) return false;
+  await writeEnvFile(id, port);
+  return true;
 }
 
 export async function writeRoute(id: string, port: number): Promise<void> {

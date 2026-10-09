@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { pool } from "../db/client.js";
 import { DRY_RUN, POLL_MS } from "./config.js";
-import { findWork, provision, teardown, type PendingWork } from "./provision.js";
+import { findWork, provision, syncActiveInstances, teardown, type PendingWork } from "./provision.js";
 
 const MAX_BACKOFF_MS = 60000;
 
@@ -37,6 +37,12 @@ async function handle(work: PendingWork): Promise<void> {
 
 async function main() {
   console.log(`control agent started${DRY_RUN ? " (dry run)" : ""}, polling every ${POLL_MS / 1000}s`);
+
+  try {
+    await syncActiveInstances();
+  } catch (err) {
+    console.error("startup sync failed:", err instanceof Error ? err.message : err);
+  }
 
   // The first pass picks up anything requested while the agent was down
   while (!stopping) {

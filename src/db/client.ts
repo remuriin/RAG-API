@@ -4,6 +4,13 @@ export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// Which timezone a "day" of query stats follows. Checked here because it is placed inside SQL text.
+const timezone = process.env.STATS_TIMEZONE?.trim() || "Asia/Manila";
+if (!/^[A-Za-z0-9_+\-/]+$/.test(timezone)) {
+  throw new Error("STATS_TIMEZONE must be a timezone name such as Asia/Manila");
+}
+export const STATS_TIMEZONE = timezone;
+
 export const SCHEMA_SQL = `
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -79,4 +86,12 @@ CREATE TABLE IF NOT EXISTS chunks (
 -- filters by instance_id after the search, which can starve a small instance of results.
 CREATE INDEX IF NOT EXISTS chunks_instance_idx ON chunks (instance_id);
 CREATE INDEX IF NOT EXISTS chunks_document_idx ON chunks (document_id);
+
+-- How many questions each instance answered per day
+CREATE TABLE IF NOT EXISTS query_counts (
+  instance_id UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  day DATE NOT NULL,
+  count INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (instance_id, day)
+);
 `;

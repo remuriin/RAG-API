@@ -87,15 +87,22 @@ sudo chmod 600 /etc/rag-control/management.env /etc/rag-control/agent.env
 ```
 DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
 FIREBASE_PROJECT_ID=rag-service-remuriin
-PUBLIC_BASE_URL=https://rag.140-245-60-8.sslip.io
+PUBLIC_BASE_URL=https://rag.remservers.me
+MGMT_PORT=4050
+INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 ```
 
-`agent.env` (the database URL and Gemini key here are what the agent writes into each new instance's env file):
+`agent.env` (the database URL, Gemini key and internal secret here are what the agent writes into each instance's env file):
 
 ```
 DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
 GEMINI_API_KEY=YOUR_KEY
+INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 ```
+
+`INTERNAL_SECRET` is what lets the management API call an instance on the owner's behalf (the dashboard's file and chat pages). Generate one with `openssl rand -hex 32`. It must be identical in both files.
+
+**Changing a setting later.** Every time the agent starts, it compares each running instance's env file with its own current settings and, where they differ, rewrites the file and restarts that instance. So to change the Gemini key or the internal secret: edit `agent.env` (and `management.env` for the secret), then `sudo systemctl restart rag-agent rag-management`.
 
 ### 4. Services
 
@@ -117,6 +124,18 @@ sudo sed -i '/rag-instances\/\*\.conf;/a\    include /etc/nginx/snippets/rag-api
 grep -n "include" /etc/nginx/sites-available/rag.conf     # the new line should appear exactly once
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+### 6. The domain
+
+The site answers to `rag.remservers.me` as well as the original `sslip.io` name. After adding a DNS A record `rag` → the VPS's public IP:
+
+```bash
+sudo sed -i 's/server_name rag.140-245-60-8.sslip.io;/server_name rag.remservers.me rag.140-245-60-8.sslip.io;/' /etc/nginx/sites-available/rag.conf
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d rag.140-245-60-8.sslip.io -d rag.remservers.me --expand
+```
+
+Then set `PUBLIC_BASE_URL=https://rag.remservers.me` in `management.env` and restart `rag-management`, so the service URLs it reports use the domain.
 
 ### Using it
 

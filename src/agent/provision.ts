@@ -6,6 +6,7 @@ import {
   removeRoute,
   startService,
   stopService,
+  syncEnvFile,
   waitForHealth,
   writeEnvFile,
   writeRoute,
@@ -22,6 +23,24 @@ export async function findWork(): Promise<PendingWork[]> {
     "SELECT id, port, status FROM instances WHERE status IN ('pending', 'deleting') ORDER BY created_at"
   );
   return result.rows;
+}
+
+// Run once when the agent starts: any running service whose env file no longer matches the
+// agent's settings (a new internal secret, a changed Gemini key) is rewritten and restarted.
+export async function syncActiveInstances(): Promise<void> {
+  const result = await pool.query(
+    "SELECT id, port FROM instances WHERE status = 'active' AND port IS NOT NULL ORDER BY created_at"
+  );
+  for (const { id, port } of result.rows) {
+    try {
+      if (await syncEnvFile(id, port)) {
+        console.log(`env file of ${id} was out of date, rewritten; restarting the service`);
+        await startService(id);
+      }
+    } catch (err) {
+      console.error(`  could not sync ${id}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 }
 
 async function assignPort(id: string): Promise<number> {

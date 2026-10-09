@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
 import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
+import { getProductName } from "../db/instance.js";
+import { isInternalToken, verifyInternalToken } from "./internal.js";
 import { hashApiKey } from "./keys.js";
 
 export async function requireApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -8,6 +10,17 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     const match = (req.get("authorization") ?? "").match(/^Bearer\s+(\S+)$/i);
     if (!match) {
       res.status(401).json({ error: "Missing API key. Send it as: Authorization: Bearer <key>" });
+      return;
+    }
+
+    // The management API, acting for the instance's owner, signs in with an internal token instead of a key
+    if (isInternalToken(match[1])) {
+      if (!verifyInternalToken(match[1], INSTANCE_ID)) {
+        res.status(401).json({ error: "Invalid internal token" });
+        return;
+      }
+      res.locals.productName = await getProductName();
+      next();
       return;
     }
 

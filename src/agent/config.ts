@@ -26,3 +26,6 @@ export const RAG_CTL = process.env.AGENT_RAG_CTL ?? "/usr/local/sbin/rag-ctl";
 // Written into each instance's env file
 export const INSTANCE_DATABASE_URL = process.env.INSTANCE_DATABASE_URL?.trim() || required("DATABASE_URL");
 export const GEMINI_API_KEY = required("GEMINI_API_KEY");
+// Shared with the management API so it can call instances on the owner's behalf. Optional:
+// without it, instances are only reachable with their API key.
+export const INTERNAL_SECRET = process.env.INTERNAL_SECRET?.trim() || undefined;

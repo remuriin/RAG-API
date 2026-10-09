@@ -1,13 +1,16 @@
 import express, { type NextFunction, type Request, type Response } from "express";
+import { internalAuthConfigured } from "../auth/internal.js";
 import { isUuid } from "../util/uuid.js";
 import { requireUser, type AuthUser } from "./auth.js";
 import { CORS_ORIGIN, MAX_INSTANCES_PER_USER } from "./config.js";
+import { forwardToInstance, InstanceUnreachableError } from "./forward.js";
 import {
   createInstance,
   getInstance,
   listInstances,
   markDeleting,
   rotateApiKey,
+  updateInstance,
   type InstanceRecord,
 } from "./instances.js";
 
@@ -26,8 +29,8 @@ function cleanName(value: unknown): string | null {
   return trimmed && trimmed.length <= MAX_NAME_CHARS ? trimmed : null;
 }
 
-// The owner's view of a record; ownerUid stays server-side
-function present({ ownerUid, ...record }: InstanceRecord) {
+// The owner's view of a record; ownerUid and the local port stay server-side
+function present({ ownerUid, port, ...record }: InstanceRecord) {
   return record;
 }
 
@@ -46,6 +49,41 @@ async function loadOwned(req: Request, res: Response): Promise<InstanceRecord | 
   return instance;
 }
 
+// For routes that talk to the running service: it must be the caller's, and up.
+async function loadRunning(req: Request, res: Response): Promise<{ id: string; port: number } | null> {
+  const instance = await loadOwned(req, res);
+  if (!instance) return null;
+  if (instance.status !== "active" || instance.port === null) {
+    res.status(409).json({ error: `The service is not active yet (it is ${instance.status})` });
+    return null;
+  }
+  if (!internalAuthConfigured()) {
+    res.status(503).json({ error: "Managing files from the dashboard is not set up on this server" });
+    return null;
+  }
+  return { id: instance.id, port: instance.port };
+}
+
+// Passes the request to the service and hands its reply back unchanged
+async function relay(
+  res: Response,
+  instance: { id: string; port: number },
+  method: string,
+  path: string,
+  options: { body?: string; contentType?: string } = {}
+): Promise<void> {
+  try {
+    const forwarded = await forwardToInstance(instance, method, path, options);
+    res.status(forwarded.status);
+    if (forwarded.contentType) res.set("Content-Type", forwarded.contentType);
+    res.send(forwarded.body);
+  } catch (err) {
+    if (!(err instanceof InstanceUnreachableError)) throw err;
+    console.error(`instance ${instance.id} did not respond:`, err.message);
+    res.status(502).json({ error: "The service is not responding right now" });
+  }
+}
+
 export function createManagementApp() {
   const app = express();
   app.disable("x-powered-by");
@@ -55,7 +93,7 @@ export function createManagementApp() {
       if (req.get("origin") === CORS_ORIGIN) {
         res.set("Access-Control-Allow-Origin", CORS_ORIGIN);
         res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
-        res.set("Access-Control-Allow-Methods", "GET, POST, DELETE");
+        res.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE");
         res.set("Vary", "Origin");
       }
       if (req.method === "OPTIONS") {
@@ -144,6 +182,93 @@ export function createManagementApp() {
       }
       const { key, prefix } = await rotateApiKey(instance.id);
       res.status(201).json({ apiKey: key, keyPrefix: prefix, note: "Copy this key now. It is not stored and cannot be shown again." });
+    })
+  );
+
+  // Rename the service and/or change what the assistant calls itself
+  api.patch(
+    "/instances/:id",
+    wrap(async (req, res) => {
+      const instance = await loadOwned(req, res);
+      if (!instance) return;
+
+      const changes: { name?: string; productName?: string | null } = {};
+      if (req.body?.name !== undefined) {
+        const name = cleanName(req.body.name);
+        if (!name) {
+          res.status(400).json({ error: `"name" must be text of at most ${MAX_NAME_CHARS} characters` });
+          return;
+        }
+        changes.name = name;
+      }
+      if (req.body?.productName !== undefined) {
+        if (req.body.productName === null || req.body.productName === "") {
+          changes.productName = null;
+        } else {
+          const productName = cleanName(req.body.productName);
+          if (!productName) {
+            res.status(400).json({ error: `"productName" must be text of at most ${MAX_NAME_CHARS} characters` });
+            return;
+          }
+          changes.productName = productName;
+        }
+      }
+      if (changes.name === undefined && changes.productName === undefined) {
+        res.status(400).json({ error: 'Send "name" and/or "productName"' });
+        return;
+      }
+
+      await updateInstance(instance.id, changes);
+      const updated = await getInstance(instance.id);
+      res.json(present(updated ?? instance));
+    })
+  );
+
+  // The dashboard's file and chat pages. The login token replaces the API key here: the request
+  // is checked for ownership and then handed to the service itself, which does the actual work.
+  api.get(
+    "/instances/:id/documents",
+    wrap(async (req, res) => {
+      const instance = await loadRunning(req, res);
+      if (instance) await relay(res, instance, "GET", "/documents");
+    })
+  );
+
+  api.post(
+    "/instances/:id/documents/:name",
+    express.text({ type: "*/*", limit: "500kb" }),
+    wrap(async (req, res) => {
+      const instance = await loadRunning(req, res);
+      if (!instance) return;
+      if (typeof req.body !== "string") {
+        // express.json already consumed a JSON body, and an empty request has no body at all
+        res.status(415).json({ error: "Only markdown is accepted. Send the file with Content-Type: text/markdown" });
+        return;
+      }
+      await relay(res, instance, "POST", `/documents/${encodeURIComponent(req.params.name)}`, {
+        body: req.body,
+        contentType: req.get("content-type") ?? "text/markdown",
+      });
+    })
+  );
+
+  api.delete(
+    "/instances/:id/documents/:name",
+    wrap(async (req, res) => {
+      const instance = await loadRunning(req, res);
+      if (instance) await relay(res, instance, "DELETE", `/documents/${encodeURIComponent(req.params.name)}`);
+    })
+  );
+
+  api.post(
+    "/instances/:id/query",
+    wrap(async (req, res) => {
+      const instance = await loadRunning(req, res);
+      if (!instance) return;
+      await relay(res, instance, "POST", "/query", {
+        body: JSON.stringify(req.body ?? {}),
+        contentType: "application/json",
+      });
     })
   );
 

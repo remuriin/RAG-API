@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { generateApiKey } from "../auth/keys.js";
-import { pool } from "../db/client.js";
+import { pool, STATS_TIMEZONE } from "../db/client.js";
 import { MAX_INSTANCES_PER_USER, PUBLIC_BASE_URL } from "./config.js";
 
 export type InstanceStatus = "pending" | "active" | "failed" | "deleting";
@@ -13,14 +13,23 @@ export interface InstanceRecord {
   status: InstanceStatus;
   errorMessage: string | null;
   url: string;
+  port: number | null; // where the instance listens on this machine; not shown to clients
   keyPrefix: string | null;
   documents: number;
   chunks: number;
+  queries: { today: number; last7Days: number; total: number };
   createdAt: string;
 }
 
+const TODAY = `(now() AT TIME ZONE '${STATS_TIMEZONE}')::date`;
+const queryCount = (filter = "") =>
+  `(SELECT COALESCE(SUM(q.count), 0)::int FROM query_counts q WHERE q.instance_id = i.id${filter})`;
+
 const SELECT_INSTANCE = `
-  SELECT i.id, i.owner_uid, i.name, i.product_name, i.status, i.error_message, i.created_at,
+  SELECT i.id, i.owner_uid, i.name, i.product_name, i.status, i.error_message, i.port, i.created_at,
+         ${queryCount(` AND q.day = ${TODAY}`)} AS queries_today,
+         ${queryCount(` AND q.day > ${TODAY} - 7`)} AS queries_7d,
+         ${queryCount()} AS queries_total,
          (SELECT k.key_prefix FROM api_keys k
            WHERE k.instance_id = i.id AND k.revoked_at IS NULL
            ORDER BY k.created_at DESC LIMIT 1) AS key_prefix,
@@ -37,9 +46,11 @@ function toRecord(row: any): InstanceRecord {
     status: row.status,
     errorMessage: row.error_message,
     url: `${PUBLIC_BASE_URL}/i/${row.id}`,
+    port: row.port,
     keyPrefix: row.key_prefix,
     documents: row.documents,
     chunks: row.chunks,
+    queries: { today: row.queries_today, last7Days: row.queries_7d, total: row.queries_total },
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -70,6 +81,26 @@ export async function createInstance(
     [id, ownerUid, name, productName, MAX_INSTANCES_PER_USER]
   );
   return result.rows[0] ? getInstance(id) : null;
+}
+
+// Changes the label and/or the assistant's product name. The instance reads its product name
+// on every request, so the next answer already uses it. productName: null clears it.
+export async function updateInstance(
+  id: string,
+  changes: { name?: string; productName?: string | null }
+): Promise<void> {
+  const sets: string[] = [];
+  const values: unknown[] = [id];
+  if (changes.name !== undefined) {
+    values.push(changes.name);
+    sets.push(`name = $${values.length}`);
+  }
+  if (changes.productName !== undefined) {
+    values.push(changes.productName);
+    sets.push(`product_name = $${values.length}`);
+  }
+  if (sets.length === 0) return;
+  await pool.query(`UPDATE instances SET ${sets.join(", ")} WHERE id = $1`, values);
 }
 
 export async function markDeleting(id: string): Promise<void> {
