@@ -104,7 +104,7 @@ sudo cp /opt/rag/deploy/rag-management.service /opt/rag/deploy/rag-agent.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now rag-management rag-agent
 systemctl status rag-management rag-agent --no-pager
-curl -i http://127.0.0.1:4000/api/me      # 401 "Missing login token" means it is up
+curl -i http://127.0.0.1:4050/api/me      # 401 "Missing login token" means it is up
 ```
 
 ### 5. nginx route for the API

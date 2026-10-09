@@ -4,7 +4,7 @@ function required(name: string): string {
   return value;
 }
 
-export const MGMT_PORT = Number(process.env.MGMT_PORT ?? 4000);
+export const MGMT_PORT = Number(process.env.MGMT_PORT ?? 4050);
 export const MGMT_HOST = process.env.MGMT_HOST ?? "127.0.0.1"; // nginx is the public entry
 
 // Only the project id is needed to verify ID tokens; no service account key
