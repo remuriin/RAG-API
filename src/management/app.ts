@@ -31,9 +31,9 @@ const wrap =
 // instructions, so line breaks and control characters are refused rather than quietly kept.
 function cleanName(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.replace(/s+/g, " ").trim();
+  const trimmed = value.replace(/\s+/g, " ").trim();
   if (!trimmed || trimmed.length > MAX_NAME_CHARS) return null;
-  if (/[p{Cc}p{Cf}]/u.test(trimmed)) return null;
+  if (/[\p{Cc}\p{Cf}]/u.test(trimmed)) return null;
   return trimmed;
 }
 
