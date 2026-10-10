@@ -2,18 +2,48 @@
 # The only root actions the control agent can perform. Install root-owned at /usr/local/sbin/rag-ctl (mode 755);
 # sudoers lets the ragagent user run this script and nothing else.
 #
-#   rag-ctl start <instanceId>     enable and (re)start rag@<instanceId>
-#   rag-ctl stop <instanceId>      stop and disable rag@<instanceId>
-#   rag-ctl reload-nginx           test the nginx config, reload only if the test passes
+#   rag-ctl start <instanceId>          enable and (re)start rag@<instanceId>
+#   rag-ctl stop <instanceId>           stop and disable rag@<instanceId>
+#   rag-ctl route <instanceId> <port>   write the nginx route for the instance, test and reload nginx
+#   rag-ctl unroute <instanceId>        remove that route, test and reload nginx
+#
+# The agent never writes to nginx's folders itself: the route file is made here, as root, from a
+# root-owned template, with nothing but a checked UUID and a checked port put into it.
 set -euo pipefail
 
+SYSTEMCTL=/usr/bin/systemctl
+NGINX=/usr/sbin/nginx
+ROUTES=/etc/nginx/rag-instances
+TEMPLATE=/etc/nginx/snippets/rag-instance.template
+
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+PORT_RE='^[1-9][0-9]{3,4}$'
 
 require_uuid() {
-  if [[ $# -ne 1 || ! "$1" =~ $UUID_RE ]]; then
-    echo "rag-ctl: expected one lowercase UUID" >&2
+  if [[ ! "${1:-}" =~ $UUID_RE ]]; then
+    echo "rag-ctl: expected a lowercase UUID" >&2
     exit 2
   fi
+}
+
+require_port() {
+  if [[ ! "${1:-}" =~ $PORT_RE ]] || (( $1 < 1024 || $1 > 65535 )); then
+    echo "rag-ctl: expected a port number between 1024 and 65535" >&2
+    exit 2
+  fi
+}
+
+require_args() {
+  if [[ $1 -ne $2 ]]; then
+    echo "rag-ctl: $3" >&2
+    exit 2
+  fi
+}
+
+# Tests the config first; a failed test leaves the running nginx untouched
+reload_nginx() {
+  "$NGINX" -t
+  "$SYSTEMCTL" reload nginx
 }
 
 action="${1:-}"
@@ -21,27 +51,48 @@ shift || true
 
 case "$action" in
   start)
-    require_uuid "$@"
-    systemctl enable "rag@$1" >/dev/null 2>&1
+    require_args $# 1 "start takes one argument"
+    require_uuid "$1"
+    "$SYSTEMCTL" enable "rag@$1" >/dev/null 2>&1
+    # a unit that hit its start limit refuses to start until the counter is cleared
+    "$SYSTEMCTL" reset-failed "rag@$1" >/dev/null 2>&1 || true
     # restart rather than start, so a re-run after an interrupted setup picks up the current env file
-    systemctl restart "rag@$1"
+    "$SYSTEMCTL" restart "rag@$1"
     ;;
   stop)
-    require_uuid "$@"
+    require_args $# 1 "stop takes one argument"
+    require_uuid "$1"
     # an instance that was never started is not an error
-    systemctl disable --now "rag@$1" >/dev/null 2>&1 || true
-    systemctl reset-failed "rag@$1" >/dev/null 2>&1 || true
+    "$SYSTEMCTL" disable --now "rag@$1" >/dev/null 2>&1 || true
+    "$SYSTEMCTL" reset-failed "rag@$1" >/dev/null 2>&1 || true
     ;;
-  reload-nginx)
-    if [[ $# -ne 0 ]]; then
-      echo "rag-ctl: reload-nginx takes no arguments" >&2
-      exit 2
+  route)
+    require_args $# 2 "route takes an instance id and a port"
+    require_uuid "$1"
+    require_port "$2"
+    if [[ ! -f "$TEMPLATE" ]]; then
+      echo "rag-ctl: template $TEMPLATE is missing" >&2
+      exit 1
     fi
-    nginx -t
-    systemctl reload nginx
+    mkdir -p "$ROUTES"
+    # written to a temp name first; the UUID and the port are the only things substituted
+    sed "s/__INSTANCE_ID__/$1/g; s/__PORT__/$2/g" "$TEMPLATE" > "$ROUTES/$1.conf.tmp"
+    chmod 644 "$ROUTES/$1.conf.tmp"
+    mv "$ROUTES/$1.conf.tmp" "$ROUTES/$1.conf"
+    if ! reload_nginx; then
+      # never leave a route behind that breaks every later reload
+      rm -f "$ROUTES/$1.conf"
+      exit 1
+    fi
+    ;;
+  unroute)
+    require_args $# 1 "unroute takes one argument"
+    require_uuid "$1"
+    rm -f "$ROUTES/$1.conf" "$ROUTES/$1.conf.tmp"
+    reload_nginx
     ;;
   *)
-    echo "usage: rag-ctl start <instanceId> | stop <instanceId> | reload-nginx" >&2
+    echo "usage: rag-ctl start <id> | stop <id> | route <id> <port> | unroute <id>" >&2
     exit 2
     ;;
 esac

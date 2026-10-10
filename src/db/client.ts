@@ -4,6 +4,12 @@ export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// An idle connection that Postgres drops (a restart, a timeout) raises here. Without a listener,
+// node treats it as an unhandled error and exits the whole process.
+pool.on("error", (err) => {
+  console.error("database connection error:", err.message);
+});
+
 // Which timezone a "day" of query stats follows. Checked here because it is placed inside SQL text.
 const timezone = process.env.STATS_TIMEZONE?.trim() || "Asia/Manila";
 if (!/^[A-Za-z0-9_+\-/]+$/.test(timezone)) {
@@ -86,6 +92,12 @@ CREATE TABLE IF NOT EXISTS chunks (
 -- filters by instance_id after the search, which can starve a small instance of results.
 CREATE INDEX IF NOT EXISTS chunks_instance_idx ON chunks (instance_id);
 CREATE INDEX IF NOT EXISTS chunks_document_idx ON chunks (document_id);
+
+-- The control agent writes the time here on every poll; /api/health reports it as stale when it stops.
+CREATE TABLE IF NOT EXISTS agent_heartbeat (
+  id INT PRIMARY KEY CHECK (id = 1),
+  seen_at TIMESTAMPTZ NOT NULL
+);
 
 -- How many questions each instance answered per day
 CREATE TABLE IF NOT EXISTS query_counts (

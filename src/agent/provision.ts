@@ -1,7 +1,7 @@
 import { pool } from "../db/client.js";
 import { FIRST_PORT } from "./config.js";
 import {
-  reloadNginx,
+  addRoute,
   removeEnvFile,
   removeRoute,
   startService,
@@ -9,7 +9,6 @@ import {
   syncEnvFile,
   waitForHealth,
   writeEnvFile,
-  writeRoute,
 } from "./system.js";
 
 export interface PendingWork {
@@ -18,11 +17,22 @@ export interface PendingWork {
   status: "pending" | "deleting";
 }
 
+// What the owner sees on a failed service. The real reason goes to the journal: it names paths and
+// units on this machine, which is for whoever runs it, not for the person who asked for a service.
+const FAILED_MESSAGE = "Setting it up failed on our side. Delete this service and create it again; if it fails twice, contact support.";
+
 export async function findWork(): Promise<PendingWork[]> {
   const result = await pool.query(
     "SELECT id, port, status FROM instances WHERE status IN ('pending', 'deleting') ORDER BY created_at"
   );
   return result.rows;
+}
+
+// Written on every poll. /api/health reports the agent as stale when this stops moving.
+export async function heartbeat(): Promise<void> {
+  await pool.query(
+    "INSERT INTO agent_heartbeat (id, seen_at) VALUES (1, now()) ON CONFLICT (id) DO UPDATE SET seen_at = now()"
+  );
 }
 
 // Run once when the agent starts: any running service whose env file no longer matches the
@@ -65,22 +75,18 @@ export async function provision(work: PendingWork): Promise<void> {
   try {
     await writeEnvFile(work.id, port);
     await startService(work.id);
-
-    await writeRoute(work.id, port);
-    try {
-      await reloadNginx();
-    } catch (err) {
-      await removeRoute(work.id); // never leave a route behind that breaks the next reload
-      throw err;
-    }
-
+    await addRoute(work.id, port); // tests the config and reloads nginx; a bad route is dropped by the helper
     await waitForHealth(port);
   } catch (err) {
-    const message = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`  provisioning ${work.id} failed: ${reason}`);
+    // Leave nothing running: a service that never answered would otherwise sit there restarting forever
+    await stopService(work.id).catch((e) => console.error(`  could not stop ${work.id}: ${e.message}`));
+    await removeRoute(work.id).catch((e) => console.error(`  could not unroute ${work.id}: ${e.message}`));
     // The status guard matters: if the owner asked to delete meanwhile, 'deleting' must win
     await pool.query(
       "UPDATE instances SET status = 'failed', error_message = $2 WHERE id = $1 AND status = 'pending'",
-      [work.id, message]
+      [work.id, FAILED_MESSAGE]
     );
     throw err;
   }
@@ -95,7 +101,6 @@ export async function teardown(work: PendingWork): Promise<void> {
   await stopService(work.id);
   await removeEnvFile(work.id);
   await removeRoute(work.id);
-  await reloadNginx();
   // keys, documents and chunks go with the row (ON DELETE CASCADE)
   await pool.query("DELETE FROM instances WHERE id = $1 AND status = 'deleting'", [work.id]);
 }

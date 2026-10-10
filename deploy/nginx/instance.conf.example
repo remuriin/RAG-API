@@ -1,12 +1,13 @@
-# Route for one RAG instance.
-# Copy to /etc/nginx/rag-instances/<instanceId>.conf, replace INSTANCE_ID and PORT, then:
-#   sudo nginx -t && sudo systemctl reload nginx
+# Route for one RAG instance. rag-ctl writes one of these per instance into /etc/nginx/rag-instances/
+# from this template, installed root-owned at /etc/nginx/snippets/rag-instance.template.
+# Only __INSTANCE_ID__ and __PORT__ are ever substituted.
 
-location /i/INSTANCE_ID/ {
+location /i/__INSTANCE_ID__/ {
     limit_req zone=rag_api burst=10 nodelay;
+    include /etc/nginx/snippets/rag-headers.conf;
 
-    # the trailing slash strips /i/INSTANCE_ID, so the service sees /health, /documents, /query
-    proxy_pass http://127.0.0.1:PORT/;
+    # the trailing slash strips /i/__INSTANCE_ID__, so the service sees /health, /documents, /query
+    proxy_pass http://127.0.0.1:__PORT__/;
 
     # uploads wait for chunking and embedding before replying
     proxy_read_timeout 300s;

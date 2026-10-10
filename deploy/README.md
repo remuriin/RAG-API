@@ -1,19 +1,33 @@
 # Deploying to the VPS
 
-Every RAG instance runs the same code from `/opt/rag` as its own systemd service (`rag@<instanceId>`), with its own env file and its own nginx route. Public URL:
+Every RAG instance runs the same code from `/opt/rag` as its own systemd service (`rag@<instanceId>`), with its own env file and its own nginx route. The management API and the web app share the same host. Public URLs:
 
 ```
-https://rag.140-245-60-8.sslip.io/i/<instanceId>/...
+https://rag.remservers.me/                    the web app (dashboard)
+https://rag.remservers.me/api/...             the management API
+https://rag.remservers.me/i/<instanceId>/...  one client's service
 ```
 
-Commands below are run on the VPS unless stated otherwise.
+The older name `rag.140-245-60-8.sslip.io` still answers, on the same certificate.
+
+Commands below are run on the VPS unless stated otherwise. Needs: Ubuntu 22.04, Node **22 or newer** (20 is out of support since April 2026), Postgres with the `vector` extension, nginx, certbot.
 
 ## One-time setup
+
+### 0. Database
+
+```bash
+sudo -u postgres psql -c "CREATE ROLE rag_app LOGIN PASSWORD 'PASSWORD';"
+sudo -u postgres psql -c "CREATE DATABASE rag_service OWNER rag_app;"
+sudo -u postgres psql -d rag_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+Postgres must listen on localhost only (the default); the VPS firewall and the OCI security list expose only 22, 80 and 443.
 
 ### 1. Code
 
 ```bash
-which node          # if this is not /usr/bin/node, edit ExecStart in deploy/rag@.service
+which node          # if this is not /usr/bin/node, edit ExecStart in the three service files
 sudo useradd --system --home /opt/rag --shell /usr/sbin/nologin rag
 sudo git clone https://github.com/remuriin/RAG-API.git /opt/rag
 cd /opt/rag
@@ -34,22 +48,28 @@ sudo mkdir -p /etc/rag && sudo chmod 700 /etc/rag
 ### 3. nginx site and HTTPS
 
 ```bash
-sudo mkdir -p /etc/nginx/rag-instances
+sudo install -d -o root -g root -m 755 /etc/nginx/rag-instances
+sudo cp /opt/rag/deploy/nginx/headers.conf      /etc/nginx/snippets/rag-headers.conf
 sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
+sudo cp /opt/rag/deploy/nginx/app-location.conf /etc/nginx/snippets/rag-app.conf
+sudo cp /opt/rag/deploy/nginx/instance.conf.example /etc/nginx/snippets/rag-instance.template
 sudo cp /opt/rag/deploy/nginx/rag.conf /etc/nginx/sites-available/rag.conf
 sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
+sudo mkdir -p /var/www/rag-app        # the web app's files go here (see "The web app")
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d rag.140-245-60-8.sslip.io
+sudo certbot --nginx -d rag.remservers.me
 ```
+
+Certbot edits the installed site file in place (adds the `listen 443` block and the HTTP→HTTPS redirect), so after this step never copy `deploy/nginx/rag.conf` over it again; apply later changes to the site file by hand. The snippets can be copied over freely.
 
 ## Control plane (management API + control agent)
 
 With these two running, services are created and deleted through the management API and nothing below "Adding an instance by hand" is needed any more.
 
-- **Management API** (`rag-management`): verifies Firebase logins, writes service requests, issues API keys. Public at `https://rag.140-245-60-8.sslip.io/api/`.
-- **Control agent** (`rag-agent`): no port. Polls the `instances` table and does the env file / systemd / nginx work for `pending` and `deleting` rows.
+- **Management API** (`rag-management`): verifies Firebase logins, writes service requests, issues API keys, relays the dashboard's file and chat requests. Public at `/api/`.
+- **Control agent** (`rag-agent`): no port. Polls the `instances` table and does the env file / systemd / nginx work for `pending` and `deleting` rows, through `rag-ctl`.
 
-Run the schema migration first (`npm run db:migrate` from a machine with the repo's `.env`).
+Run the schema migration first (`npm run db:migrate` from a machine with the repo's `.env` and a VPN or SSH tunnel to Postgres; it is safe to run again).
 
 ### 1. Update the code
 
@@ -64,14 +84,14 @@ sudo npm run build
 
 ```bash
 sudo useradd --system --home /opt/rag --shell /usr/sbin/nologin ragagent
-sudo chown -R ragagent:ragagent /etc/rag /etc/nginx/rag-instances
+sudo chown -R ragagent:ragagent /etc/rag
 sudo chmod 700 /etc/rag
 sudo install -o root -g root -m 755 /opt/rag/deploy/rag-ctl /usr/local/sbin/rag-ctl
 sudo install -o root -g root -m 440 /opt/rag/deploy/sudoers-rag-agent /etc/sudoers.d/rag-agent
 sudo visudo -cf /etc/sudoers.d/rag-agent
 ```
 
-The agent owns the two folders it writes to. Its only root access is `sudo /usr/local/sbin/rag-ctl`, which accepts `start <uuid>`, `stop <uuid>` and `reload-nginx`.
+The agent owns `/etc/rag` (the instance env files) and nothing else. Its only root access is `sudo /usr/local/sbin/rag-ctl`, which accepts `start <uuid>`, `stop <uuid>`, `route <uuid> <port>` and `unroute <uuid>`. The nginx route files in `/etc/nginx/rag-instances` are written by `rag-ctl` as root, from the root-owned template, so the agent never puts anything into nginx's configuration itself.
 
 ### 3. Env files
 
@@ -82,7 +102,7 @@ sudo nano /etc/rag-control/agent.env
 sudo chmod 600 /etc/rag-control/management.env /etc/rag-control/agent.env
 ```
 
-`management.env`:
+`management.env` (all five are required):
 
 ```
 DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
@@ -100,7 +120,7 @@ GEMINI_API_KEY=YOUR_KEY
 INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 ```
 
-`INTERNAL_SECRET` is what lets the management API call an instance on the owner's behalf (the dashboard's file and chat pages). Generate one with `openssl rand -hex 32`. It must be identical in both files.
+`INTERNAL_SECRET` is what lets the management API call an instance on the owner's behalf (the dashboard's file and chat pages). Generate one with `openssl rand -hex 32`. It must be identical in both files; if it isn't, the dashboard's file and chat pages answer "the service is not responding" and the management log says why.
 
 **Changing a setting later.** Every time the agent starts, it compares each running instance's env file with its own current settings and, where they differ, rewrites the file and restarts that instance. So to change the Gemini key or the internal secret: edit `agent.env` (and `management.env` for the secret), then `sudo systemctl restart rag-agent rag-management`.
 
@@ -111,38 +131,17 @@ sudo cp /opt/rag/deploy/rag-management.service /opt/rag/deploy/rag-agent.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now rag-management rag-agent
 systemctl status rag-management rag-agent --no-pager
-curl -i http://127.0.0.1:4050/api/me      # 401 "Missing login token" means it is up
+curl http://127.0.0.1:4050/api/health      # {"status":"ok","agent":"ok"} once the agent has polled
 ```
 
-### 5. nginx route for the API
-
-Certbot edited the installed site file, so don't copy `deploy/nginx/rag.conf` over it. The route lives in its own snippet file; the site file only needs one `include` line, added right after the line that includes the instance routes:
-
-```bash
-sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
-sudo sed -i '/rag-instances\/\*\.conf;/a\    include /etc/nginx/snippets/rag-api.conf;' /etc/nginx/sites-available/rag.conf
-grep -n "include" /etc/nginx/sites-available/rag.conf     # the new line should appear exactly once
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-### 6. The domain
-
-The site answers to `rag.remservers.me` as well as the original `sslip.io` name. After adding a DNS A record `rag` → the VPS's public IP:
-
-```bash
-sudo sed -i 's/server_name rag.140-245-60-8.sslip.io;/server_name rag.remservers.me rag.140-245-60-8.sslip.io;/' /etc/nginx/sites-available/rag.conf
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d rag.140-245-60-8.sslip.io -d rag.remservers.me --expand
-```
-
-Then set `PUBLIC_BASE_URL=https://rag.remservers.me` in `management.env` and restart `rag-management`, so the service URLs it reports use the domain.
+`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point an external pinger at `https://rag.remservers.me/api/health` so a dead agent is noticed.
 
 ### Using it
 
 From a machine with the repo's `.env` (which has the test account), `npm run dev:firebase-token` prints a login token valid for an hour. With it as `TOKEN`:
 
 ```bash
-API=https://rag.140-245-60-8.sslip.io/api
+API=https://rag.remservers.me/api
 curl -X POST $API/instances -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"My service","productName":"Acme"}'
 curl $API/instances -H "Authorization: Bearer $TOKEN"                 # status goes pending -> active
 curl -X POST $API/instances/<id>/key -H "Authorization: Bearer $TOKEN"   # the API key, shown once
@@ -150,6 +149,30 @@ curl -X DELETE $API/instances/<id> -H "Authorization: Bearer $TOKEN"
 ```
 
 Logs: `journalctl -u rag-agent -f` and `journalctl -u rag-management -f`.
+
+## The web app
+
+The dashboard is a static build from the `RaaS` repository (`frontend/`). nginx serves it at `/` from `/var/www/rag-app`; nothing runs for it, so a redeploy is a file copy and needs no nginx reload.
+
+On the PC, in `RaaS/frontend`:
+
+```bash
+npm run build
+```
+
+Copy `dist/` to the VPS (for example with `scp -r dist/ user@vps:/tmp/rag-app`), then on the VPS:
+
+```bash
+sudo rm -rf /var/www/rag-app.new
+sudo cp -r /tmp/rag-app /var/www/rag-app.new
+sudo chown -R root:root /var/www/rag-app.new && sudo chmod -R a+rX /var/www/rag-app.new
+sudo rm -rf /var/www/rag-app.old
+sudo mv /var/www/rag-app /var/www/rag-app.old 2>/dev/null; sudo mv /var/www/rag-app.new /var/www/rag-app
+```
+
+The snippet `rag-app.conf` already sets the caching (`index.html` never cached, `/assets/` cached for a year), the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
+
+Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
 
 ## Adding an instance by hand
 
@@ -171,32 +194,27 @@ PORT=<port>
 sudo tee /etc/rag/$ID.env > /dev/null <<EOF
 INSTANCE_ID=$ID
 PORT=$PORT
-DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
-GEMINI_API_KEY=YOUR_KEY
+DATABASE_URL="postgres://rag_app:PASSWORD@localhost:5432/rag_service"
+GEMINI_API_KEY="YOUR_KEY"
 EOF
 sudo chmod 600 /etc/rag/$ID.env
 sudo nano /etc/rag/$ID.env      # fill in PASSWORD (URL-encoded, e.g. # as %23) and the Gemini key
 
-# 2. service
-sudo systemctl enable --now rag@$ID
-systemctl status rag@$ID --no-pager
+# 2. service and route
+sudo rag-ctl start $ID
 curl http://127.0.0.1:$PORT/health
+sudo rag-ctl route $ID $PORT
 
-# 3. nginx route
-sed "s/INSTANCE_ID/$ID/g; s/PORT/$PORT/g" /opt/rag/deploy/nginx/instance.conf.example \
-  | sudo tee /etc/nginx/rag-instances/$ID.conf > /dev/null
-sudo nginx -t && sudo systemctl reload nginx
-
-# 4. from anywhere
-curl https://rag.140-245-60-8.sslip.io/i/$ID/health
+# 3. from anywhere
+curl https://rag.remservers.me/i/$ID/health
 ```
 
 ## Removing an instance
 
 ```bash
-sudo systemctl disable --now rag@$ID
-sudo rm /etc/rag/$ID.env /etc/nginx/rag-instances/$ID.conf
-sudo nginx -t && sudo systemctl reload nginx
+sudo rag-ctl stop $ID
+sudo rag-ctl unroute $ID
+sudo rm /etc/rag/$ID.env
 ```
 
 Then delete its row from `instances`; its keys, documents and chunks are removed with it.
@@ -213,14 +231,17 @@ sudo npm run build
 sudo systemctl restart 'rag@*' rag-management rag-agent
 ```
 
-If the update changes the database schema, run `npm run db:migrate` (from a machine with the repo's `.env`) before restarting.
+If the update changes the database schema, run `npm run db:migrate` (from a machine with the repo's `.env`) before restarting. If it changes a file under `deploy/`, copy that file to its place again (service files need `sudo systemctl daemon-reload`; nginx snippets need `sudo nginx -t && sudo systemctl reload nginx`; `rag-ctl` needs the `install` line from step 2).
 
 ## Logs and status
 
 ```bash
 systemctl list-units 'rag@*'
 journalctl -u rag@$ID -f
+journalctl -t rag-backup           # the nightly backup's failures, if any
 ```
+
+A unit that fails to start 5 times within 10 minutes is left stopped (so a broken instance doesn't restart every 5 seconds forever). `rag-ctl start` clears that state; by hand it is `sudo systemctl reset-failed rag@$ID`.
 
 ## Database backups
 
@@ -234,10 +255,15 @@ sudo -u postgres /usr/local/sbin/rag-backup      # run it once now
 sudo ls -lh /var/backups/rag
 ```
 
-It runs at 18:15 UTC (2:15 AM in the Philippines). The dumps are on the same disk as the database, so they cover mistakes and bad deploys but not the loss of the VPS; copy one off the server now and then for that.
+It runs at 18:15 UTC (2:15 AM in the Philippines). A failed run is written to the journal (`journalctl -t rag-backup`). To be told about a night that didn't run at all, set `PING_URL` in `/usr/local/sbin/rag-backup` to a dead-man's-switch address (healthchecks.io has a free tier).
 
-Restore:
+The dumps are on the same disk as the database, so they cover mistakes and bad deploys but not the loss of the VPS. For that, copy them off the machine: for example a second cron line that runs `rclone copy /var/backups/rag remote:rag-backups` to OCI Object Storage (free tier) after the dump.
+
+Restore. The services must be stopped first: a restore drops and recreates the tables, which waits forever on connections that are still open, and the agent could provision in between.
 
 ```bash
-sudo -u postgres pg_restore --clean --if-exists -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
+sudo systemctl stop 'rag@*' rag-management rag-agent
+sudo -u postgres pg_restore --clean --if-exists --single-transaction -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
+sudo systemctl start rag-management rag-agent
+sudo systemctl start 'rag@*'
 ```

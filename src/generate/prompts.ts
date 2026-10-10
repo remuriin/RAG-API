@@ -6,7 +6,8 @@ export interface PromptOptions {
 }
 
 // Rules live in the system instruction; the user message carries only data, inside these sections.
-const SECTION_TAG = /<\/?(information|question|topics)>/gi;
+// any spelling of the tags: with spaces, attributes or odd case, opening or closing
+const SECTION_TAG = /<\/?\s*(information|question|topics)\b[^>]*>/gi;
 
 // Stops inserted text from closing its own section or opening a fake one
 function asData(text: string): string {

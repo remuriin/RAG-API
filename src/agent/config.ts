@@ -15,10 +15,7 @@ export const POLL_MS = Number(process.env.AGENT_POLL_MS ?? 2000);
 export const FIRST_PORT = 4101;
 
 export const ENV_DIR = process.env.AGENT_ENV_DIR ?? (DRY_RUN ? join(dryRunDir, "env") : "/etc/rag");
-export const NGINX_DIR =
-  process.env.AGENT_NGINX_DIR ?? (DRY_RUN ? join(dryRunDir, "nginx") : "/etc/nginx/rag-instances");
-export const ROUTE_TEMPLATE =
-  process.env.AGENT_ROUTE_TEMPLATE ?? join(process.cwd(), "deploy", "nginx", "instance.conf.example");
+// nginx routes are written by rag-ctl (root) from its own template; the agent only asks for them
 
 // The only way the agent performs root actions (see deploy/rag-ctl)
 export const RAG_CTL = process.env.AGENT_RAG_CTL ?? "/usr/local/sbin/rag-ctl";

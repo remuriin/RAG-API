@@ -18,26 +18,32 @@ export async function createProcessingDocument(source: string, content: string):
   return result.rows[0].id;
 }
 
+// Each embedding is ~15 KB of text as a parameter, so the chunks go in batches rather than one statement
+const INSERT_BATCH = 200;
+
 // One transaction: store the chunks and mark the document ready, so a document is never searchable half-ingested.
 export async function activateDocument(documentId: string, chunks: EmbeddedChunk[]): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    await client.query(
-      `INSERT INTO chunks (document_id, instance_id, chunk_index, heading_path, chunk_text, embedding)
-       SELECT $1, $2, c.chunk_index, c.heading_path, c.chunk_text, c.embedding::vector
-       FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
-         AS c(chunk_index, heading_path, chunk_text, embedding)`,
-      [
-        documentId,
-        INSTANCE_ID,
-        chunks.map((c) => c.chunkIndex),
-        chunks.map((c) => c.headingPath),
-        chunks.map((c) => c.content),
-        chunks.map((c) => toVectorLiteral(c.embedding)),
-      ]
-    );
+    for (let start = 0; start < chunks.length; start += INSERT_BATCH) {
+      const batch = chunks.slice(start, start + INSERT_BATCH);
+      await client.query(
+        `INSERT INTO chunks (document_id, instance_id, chunk_index, heading_path, chunk_text, embedding)
+         SELECT $1, $2, c.chunk_index, c.heading_path, c.chunk_text, c.embedding::vector
+         FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
+           AS c(chunk_index, heading_path, chunk_text, embedding)`,
+        [
+          documentId,
+          INSTANCE_ID,
+          batch.map((c) => c.chunkIndex),
+          batch.map((c) => c.headingPath),
+          batch.map((c) => c.content),
+          batch.map((c) => toVectorLiteral(c.embedding)),
+        ]
+      );
+    }
 
     await client.query("UPDATE documents SET status = 'ready', error = NULL WHERE id = $1", [documentId]);
 

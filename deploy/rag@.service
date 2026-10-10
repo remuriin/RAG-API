@@ -6,6 +6,10 @@
 Description=RAG instance %i
 After=network-online.target postgresql.service
 Wants=network-online.target
+# A broken instance (bad env file, port in use) stops being retried after 5 starts in 10 minutes
+# instead of restarting every 5 seconds forever. rag-ctl clears the counter when it starts one on purpose.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -25,6 +29,21 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+# One instance embedding a 500 KB file must not take the whole VPS with it
+MemoryMax=512M
+TasksMax=256
+OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target

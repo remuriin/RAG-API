@@ -1,3 +1,4 @@
 # Install as /etc/cron.d/rag-backup (root-owned, mode 644).
 # Runs the database backup every day at 18:15 UTC, which is 2:15 AM in the Philippines.
-15 18 * * * postgres /usr/local/sbin/rag-backup
+# A failure is written to the journal (journalctl -t rag-backup); cron alone would say nothing.
+15 18 * * * postgres /usr/local/sbin/rag-backup >/dev/null 2>&1 || logger -t rag-backup -p user.err "nightly database backup failed"

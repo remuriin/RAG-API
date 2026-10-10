@@ -73,14 +73,28 @@ export async function createInstance(
   productName: string | null
 ): Promise<InstanceRecord | null> {
   const id = randomUUID();
-  const result = await pool.query(
-    `INSERT INTO instances (id, owner_uid, name, product_name, status)
-     SELECT $1, $2, $3, $4, 'pending'
-     WHERE (SELECT COUNT(*) FROM instances WHERE owner_uid = $2 AND status <> 'deleting') < $5
-     RETURNING id`,
-    [id, ownerUid, name, productName, MAX_INSTANCES_PER_USER]
-  );
-  return result.rows[0] ? getInstance(id) : null;
+  const client = await pool.connect();
+  let created = false;
+  try {
+    await client.query("BEGIN");
+    // one create at a time per owner, so the count below can't be read twice before either insert lands
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [ownerUid]);
+    const result = await client.query(
+      `INSERT INTO instances (id, owner_uid, name, product_name, status)
+       SELECT $1, $2, $3, $4, 'pending'
+       WHERE (SELECT COUNT(*) FROM instances WHERE owner_uid = $2 AND status <> 'deleting') < $5
+       RETURNING id`,
+      [id, ownerUid, name, productName, MAX_INSTANCES_PER_USER]
+    );
+    created = result.rows.length > 0;
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  return created ? getInstance(id) : null;
 }
 
 // Changes the label and/or the assistant's product name. The instance reads its product name

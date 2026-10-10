@@ -1,12 +1,14 @@
 import express, { type NextFunction, type Request, type Response } from "express";
+import { DocumentTooFragmentedError } from "../ingest/chunker.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
 import { recordQuery } from "../db/stats.js";
 import { generateAnswer } from "../generate/answer.js";
-import { DocumentExistsError, EmptyDocumentError, ingestDocument } from "../ingest/pipeline.js";
+import { DocumentExistsError, EmptyDocumentError, IngestQueueFullError, ingestDocument } from "../ingest/pipeline.js";
 import { deleteDocument, listDocuments } from "../ingest/store.js";
 import { retrieveRelevantChunks } from "../retrieve/search.js";
+import { clientError } from "../util/http-errors.js";
 import { isRetryable } from "../util/retry.js";
 
 const SOURCE_RE = /^(?=.{4,100}$)[A-Za-z0-9][A-Za-z0-9._-]*\.md$/i; // only .md files
@@ -88,8 +90,12 @@ export function createApp() {
         const document = await ingestDocument(source, req.body);
         res.status(201).json({ ...document, status: "ready" });
       } catch (err) {
-        if (err instanceof EmptyDocumentError) {
+        if (err instanceof EmptyDocumentError || err instanceof DocumentTooFragmentedError) {
           res.status(400).json({ error: err.message });
+          return;
+        }
+        if (err instanceof IngestQueueFullError) {
+          res.status(429).json({ error: err.message });
           return;
         }
         if (err instanceof DocumentExistsError) {
@@ -157,9 +163,9 @@ export function createApp() {
   });
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    // body-parser errors (malformed JSON, body too large) carry their own status
-    if (err?.expose && typeof err.status === "number") {
-      res.status(err.status).json({ error: err.message });
+    const client = clientError(err);
+    if (client) {
+      res.status(client.status).json({ error: client.message });
       return;
     }
     if (isRetryable(err)) {

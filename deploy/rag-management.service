@@ -5,6 +5,8 @@
 Description=RAG management API
 After=network-online.target postgresql.service
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -21,6 +23,20 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+MemoryMax=512M
+TasksMax=256
+OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target

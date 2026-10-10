@@ -1,16 +1,18 @@
 #!/bin/bash
 # Nightly backup of the rag_service database. Install root-owned at /usr/local/sbin/rag-backup (mode 755);
-# deploy/rag-backup.cron runs it as the postgres user.
+# deploy/rag-backup.cron runs it as the postgres user and reports a failure to the journal.
 #
 # Keeps the last 7 daily dumps in /var/backups/rag. These protect against mistakes and bad deploys;
 # they sit on the same disk as the database, so they do NOT protect against losing the VPS itself.
+# For that, set PING_URL below to a dead-man's-switch address (for example healthchecks.io) so a
+# missed night is noticed, and copy the dumps off the machine (see "Database backups" in README.md).
 #
-# Restore one with:
-#   sudo -u postgres pg_restore --clean --if-exists -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
+# Restore: see "Database backups" in deploy/README.md (the services must be stopped first).
 set -euo pipefail
 
 DIR=/var/backups/rag
 KEEP_DAYS=7
+PING_URL=""   # optional: an address to GET after a successful dump
 FILE="$DIR/rag_service-$(date +%F).dump"
 
 # write to a temp name first, so a failed dump never leaves a half file that looks like a backup
@@ -19,3 +21,7 @@ mv "$FILE.tmp" "$FILE"
 
 find "$DIR" -name 'rag_service-*.dump' -mtime +"$KEEP_DAYS" -delete
 find "$DIR" -name '*.tmp' -mtime +1 -delete
+
+if [[ -n "$PING_URL" ]]; then
+  curl -fsS -m 10 -o /dev/null "$PING_URL" || logger -t rag-backup -p user.warning "backup done, but the ping to $PING_URL failed"
+fi

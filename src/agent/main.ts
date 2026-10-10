@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { pool } from "../db/client.js";
 import { DRY_RUN, POLL_MS } from "./config.js";
-import { findWork, provision, syncActiveInstances, teardown, type PendingWork } from "./provision.js";
+import { findWork, heartbeat, provision, syncActiveInstances, teardown, type PendingWork } from "./provision.js";
 
 const MAX_BACKOFF_MS = 60000;
 
@@ -47,10 +47,15 @@ async function main() {
   // The first pass picks up anything requested while the agent was down
   while (!stopping) {
     try {
+      await heartbeat();
       // one at a time, so port assignment and nginx reloads never overlap
       for (const work of await findWork()) {
         if (stopping) break;
         await handle(work);
+      }
+      // forget retry timers of rows that are no longer waiting (a failed provision, a finished teardown)
+      for (const id of retryAfter.keys()) {
+        if (!(await findWork()).some((w) => w.id === id)) retryAfter.delete(id);
       }
     } catch (err) {
       console.error("poll failed:", err instanceof Error ? err.message : err);

@@ -1,18 +1,9 @@
 import { execFile } from "child_process";
-import { mkdir, readFile, rm, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { promisify } from "util";
 import { isUuid } from "../util/uuid.js";
-import {
-  DRY_RUN,
-  ENV_DIR,
-  GEMINI_API_KEY,
-  INSTANCE_DATABASE_URL,
-  INTERNAL_SECRET,
-  NGINX_DIR,
-  RAG_CTL,
-  ROUTE_TEMPLATE,
-} from "./config.js";
+import { DRY_RUN, ENV_DIR, GEMINI_API_KEY, INSTANCE_DATABASE_URL, INTERNAL_SECRET, RAG_CTL } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,7 +16,12 @@ function assertUuid(id: string): void {
 }
 
 const envPath = (id: string) => join(ENV_DIR, `${id}.env`);
-const routePath = (id: string) => join(NGINX_DIR, `${id}.conf`);
+
+// systemd reads EnvironmentFile with shell-like quoting: inside double quotes only \" and \\ are special
+function quoted(value: string): string {
+  if (/[\r\n]/.test(value)) throw new Error("an env value contains a line break");
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
 
 function envFileContent(id: string, port: number): string {
   // a dry run leaves no secrets lying around in the temp folder
@@ -33,17 +29,21 @@ function envFileContent(id: string, port: number): string {
   const lines = [
     `INSTANCE_ID=${id}`,
     `PORT=${port}`,
-    `DATABASE_URL=${secret(INSTANCE_DATABASE_URL)}`,
-    `GEMINI_API_KEY=${secret(GEMINI_API_KEY)}`,
+    `DATABASE_URL=${quoted(secret(INSTANCE_DATABASE_URL))}`,
+    `GEMINI_API_KEY=${quoted(secret(GEMINI_API_KEY))}`,
   ];
-  if (INTERNAL_SECRET) lines.push(`INTERNAL_SECRET=${secret(INTERNAL_SECRET)}`);
+  if (INTERNAL_SECRET) lines.push(`INTERNAL_SECRET=${quoted(secret(INTERNAL_SECRET))}`);
   return lines.join("\n") + "\n";
 }
 
+// Written to a temporary name and renamed into place, so a crash halfway never leaves a half file
+// that systemd would then read on the next restart.
 export async function writeEnvFile(id: string, port: number): Promise<void> {
   assertUuid(id);
   await mkdir(ENV_DIR, { recursive: true });
-  await writeFile(envPath(id), envFileContent(id, port), { mode: 0o600 });
+  const target = envPath(id);
+  await writeFile(`${target}.tmp`, envFileContent(id, port), { mode: 0o600 });
+  await rename(`${target}.tmp`, target);
 }
 
 // Brings an existing env file up to date with the agent's current settings.
@@ -56,22 +56,9 @@ export async function syncEnvFile(id: string, port: number): Promise<boolean> {
   return true;
 }
 
-export async function writeRoute(id: string, port: number): Promise<void> {
-  assertUuid(id);
-  const template = await readFile(ROUTE_TEMPLATE, "utf-8");
-  const route = template.replaceAll("INSTANCE_ID", id).replaceAll("PORT", String(port));
-  await mkdir(NGINX_DIR, { recursive: true });
-  await writeFile(routePath(id), route, { mode: 0o644 });
-}
-
 export async function removeEnvFile(id: string): Promise<void> {
   assertUuid(id);
   await rm(envPath(id), { force: true });
-}
-
-export async function removeRoute(id: string): Promise<void> {
-  assertUuid(id);
-  await rm(routePath(id), { force: true });
 }
 
 // Runs the root-owned helper through sudo. execFile passes arguments as-is, with no shell involved.
@@ -98,9 +85,17 @@ export async function stopService(id: string): Promise<void> {
   await ctl("stop", id);
 }
 
-// Tests the nginx config first; a failed test leaves the running config untouched.
-export async function reloadNginx(): Promise<void> {
-  await ctl("reload-nginx");
+// The nginx route is written by the root helper from its own template, so this process never
+// puts anything into nginx's config folder itself. Both calls test the config and reload nginx.
+export async function addRoute(id: string, port: number): Promise<void> {
+  assertUuid(id);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`Refusing to route to port ${port}`);
+  await ctl("route", id, String(port));
+}
+
+export async function removeRoute(id: string): Promise<void> {
+  assertUuid(id);
+  await ctl("unroute", id);
 }
 
 export async function waitForHealth(port: number): Promise<void> {

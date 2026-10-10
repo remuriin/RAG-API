@@ -1,5 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { internalAuthConfigured } from "../auth/internal.js";
+import { pool } from "../db/client.js";
+import { clientError } from "../util/http-errors.js";
 import { isUuid } from "../util/uuid.js";
 import { requireUser, type AuthUser } from "./auth.js";
 import { CORS_ORIGIN, MAX_INSTANCES_PER_USER } from "./config.js";
@@ -15,6 +17,8 @@ import {
 } from "./instances.js";
 
 const MAX_NAME_CHARS = 60;
+// The agent writes a heartbeat every poll (2 s); this much silence means it is down
+const AGENT_STALE_SECONDS = 60;
 
 // Express 4 does not catch rejected promises from async handlers
 const wrap =
@@ -23,10 +27,14 @@ const wrap =
     fn(req, res).catch(next);
   };
 
+// A label or product name: one line of plain text. The product name goes into the assistant's
+// instructions, so line breaks and control characters are refused rather than quietly kept.
 function cleanName(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed && trimmed.length <= MAX_NAME_CHARS ? trimmed : null;
+  const trimmed = value.replace(/s+/g, " ").trim();
+  if (!trimmed || trimmed.length > MAX_NAME_CHARS) return null;
+  if (/[p{Cc}p{Cf}]/u.test(trimmed)) return null;
+  return trimmed;
 }
 
 // The owner's view of a record; ownerUid and the local port stay server-side
@@ -74,6 +82,13 @@ async function relay(
 ): Promise<void> {
   try {
     const forwarded = await forwardToInstance(instance, method, path, options);
+    if (forwarded.status === 401) {
+      // The dashboard's login was already checked here. A 401 from the instance means the internal
+      // secret differs between this process and that instance: an operator problem, not the user's.
+      console.error(`instance ${instance.id} rejected the internal token; is INTERNAL_SECRET the same in management.env and agent.env?`);
+      res.status(502).json({ error: "The service is not responding right now" });
+      return;
+    }
     res.status(forwarded.status);
     if (forwarded.contentType) res.set("Content-Type", forwarded.contentType);
     res.send(forwarded.body);
@@ -103,6 +118,22 @@ export function createManagementApp() {
       next();
     });
   }
+
+  // For monitoring. Says whether the database answers and whether the control agent has checked in lately.
+  app.get(
+    "/api/health",
+    wrap(async (_req, res) => {
+      let agent: "ok" | "stale" | "unknown" = "unknown";
+      try {
+        const result = await pool.query("SELECT EXTRACT(EPOCH FROM now() - seen_at) AS age FROM agent_heartbeat WHERE id = 1");
+        if (result.rows[0]) agent = Number(result.rows[0].age) < AGENT_STALE_SECONDS ? "ok" : "stale";
+      } catch {
+        res.status(503).json({ status: "unavailable" });
+        return;
+      }
+      res.status(agent === "stale" ? 503 : 200).json({ status: agent === "stale" ? "degraded" : "ok", agent });
+    })
+  );
 
   const api = express.Router();
   api.use(requireUser);
@@ -279,9 +310,9 @@ export function createManagementApp() {
   });
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    // body-parser errors (malformed JSON, body too large) carry their own status
-    if (err?.expose && typeof err.status === "number") {
-      res.status(err.status).json({ error: err.message });
+    const client = clientError(err);
+    if (client) {
+      res.status(client.status).json({ error: client.message });
       return;
     }
     console.error(err);

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "RAG instance API: per-client markdown ingestion and question answering with pgvector and Gemini",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "ingest": "tsx scripts/ingest.ts",
     "ask": "tsx scripts/ask.ts",
