@@ -11,7 +11,9 @@ StartLimitBurst=5
 [Service]
 Type=simple
 # Owns /etc/rag; reaches root only through sudo /usr/local/sbin/rag-ctl, which also writes the nginx routes.
-# No NoNewPrivileges here: it would also apply to sudo and break rag-ctl. The settings below don't touch privileges.
+# No NoNewPrivileges here: it would also apply to sudo and break rag-ctl. For the same reason none of the
+# Protect*/Restrict* settings that switch it on by themselves for a non-root unit are used (ProtectKernelTunables,
+# ProtectKernelModules, ProtectControlGroups, PrivateDevices, RestrictNamespaces and the like).
 User=ragagent
 Group=ragagent
 WorkingDirectory=/opt/rag
@@ -23,9 +25,6 @@ RestartSec=5
 
 ProtectHome=true
 PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
 
 MemoryMax=256M
 TasksMax=128
