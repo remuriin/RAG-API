@@ -20,12 +20,26 @@ export async function requireUser(req: Request, res: Response, next: NextFunctio
   }
 
   let user: AuthUser;
+  let emailVerified: boolean;
   try {
     // checks the signature, the expiry, and that the token was issued for this Firebase project
     const decoded = await getAuth().verifyIdToken(match[1]);
     user = { uid: decoded.uid, email: decoded.email ?? null };
+    emailVerified = decoded.email_verified === true;
   } catch {
     res.status(401).json({ error: "Invalid or expired login token" });
+    return;
+  }
+
+  // Firebase hands out a valid token the moment someone registers, before they have opened the
+  // verification link. Until they do, the account can do nothing here and gets no client record.
+  // The code lets the dashboard tell this apart from other 403s: a token issued before the email
+  // was verified still says "not verified", so the dashboard fetches a new one and tries again.
+  if (!emailVerified) {
+    res.status(403).json({
+      error: "Verify your email address first. Open the link in the email we sent you, then try again.",
+      code: "email_not_verified",
+    });
     return;
   }
 
