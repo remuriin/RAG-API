@@ -55,7 +55,6 @@ sudo cp /opt/rag/deploy/nginx/app-location.conf /etc/nginx/snippets/rag-app.conf
 sudo cp /opt/rag/deploy/nginx/instance.conf.example /etc/nginx/snippets/rag-instance.template
 sudo cp /opt/rag/deploy/nginx/rag.conf /etc/nginx/sites-available/rag.conf
 sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
-sudo mkdir -p /var/www/rag-app        # the web app's files go here (see "The web app")
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d rag.remservers.me
 ```
@@ -152,25 +151,21 @@ Logs: `journalctl -u rag-agent -f` and `journalctl -u rag-management -f`.
 
 ## The web app
 
-The dashboard is a static build from the `RaaS` repository (`frontend/`). nginx serves it at `/` from `/var/www/rag-app`; nothing runs for it, so a redeploy is a file copy and needs no nginx reload.
+The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs as one pod in the VPS's Kubernetes cluster (k3s), in the namespace `rem-raas`. nginx forwards `/` to that pod's service at the fixed inside-only address `10.43.0.80`. The cluster files are in `RaaS/k8s/`.
 
-On the PC, in `RaaS/frontend`:
-
-```bash
-npm run build
-```
-
-Copy `dist/` to the VPS (for example with `scp -r dist/ user@vps:/tmp/rag-app`), then on the VPS:
+A push to `main` in `RaaS` that touches `frontend/` makes GitHub build the image and store it as `ghcr.io/remuriin/raas-web`, tagged `main` and with the commit. Once that run is green, on the VPS:
 
 ```bash
-sudo rm -rf /var/www/rag-app.new
-sudo cp -r /tmp/rag-app /var/www/rag-app.new
-sudo chown -R root:root /var/www/rag-app.new && sudo chmod -R a+rX /var/www/rag-app.new
-sudo rm -rf /var/www/rag-app.old
-sudo mv /var/www/rag-app /var/www/rag-app.old 2>/dev/null; sudo mv /var/www/rag-app.new /var/www/rag-app
+sudo kubectl -n rem-raas rollout restart deployment/web     # downloads the newest "main" image and swaps pods
+sudo kubectl -n rem-raas rollout status deployment/web      # returns when the new pod answers
+sudo kubectl -n rem-raas rollout undo deployment/web        # only if the new one is wrong: back to the previous
 ```
 
-The snippet `rag-app.conf` already sets the caching (`index.html` never cached, `/assets/` cached for a year), the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
+The old pod keeps serving until the new one answers its health check, so there is no gap. No nginx reload is needed.
+
+The container sets the caching (`index.html` never cached, `/assets/` cached for a year). The snippet `rag-app.conf` adds the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
+
+If the pod or the cluster is down, `/` answers 502 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
 
 Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
 
