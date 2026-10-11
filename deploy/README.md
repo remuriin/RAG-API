@@ -184,16 +184,17 @@ sudo useradd --system --create-home --shell /bin/sh deploy
 sudo install -d -o root -g root -m 755 /home/deploy/.ssh
 ```
 
-Per project (here `rem-raas`; the name after `k8s-deploy` is the project's namespace):
+Per project, with the project's namespace:
 
 ```bash
-ssh-keygen -t ed25519 -N "" -C rem-raas-deploy -f ~/rem-raas-deploy
-printf 'restrict,command="sudo /usr/local/sbin/k8s-deploy rem-raas" %s\n' "$(cat ~/rem-raas-deploy.pub)" | sudo tee -a /home/deploy/.ssh/authorized_keys
-cat ~/rem-raas-deploy          # paste all of it into the repository's secret DEPLOY_KEY, then:
-shred -u ~/rem-raas-deploy ~/rem-raas-deploy.pub
+sudo /opt/rag/deploy/k8s-add-project my-app
 ```
 
-The workflow's deploy step is the same in every project apart from the deployment names (see `RaaS/.github/workflows/image.yml`). The script's checks are tested by `k8s-deploy.test.sh`, in a throwaway container.
+It makes the project's key, adds its line to `/home/deploy/.ssh/authorized_keys` (`restrict,command="sudo /usr/local/sbin/k8s-deploy my-app" ssh-ed25519 ...`), and prints the private half once, for the repository's secret `DEPLOY_KEY`. It keeps no copy.
+
+The workflow's deploy step is the same in every project apart from the deployment names (see `RaaS/.github/workflows/image.yml`). The scripts' checks are tested by `k8s-deploy.test.sh` and `k8s-template.test.sh`.
+
+**A new project** starts from `k8s-template/`: `k8s-new-project` copies its files into the project's repository with the names filled in, and `k8s-template/README.md` is the checklist from there to a live site.
 
 A change to a project's `k8s/*.yaml` is not applied by the workflow: run `sudo kubectl apply -f` for it. That also sets the image back to `:main`, the newest build.
 

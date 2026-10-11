@@ -1,0 +1,5 @@
+# The box that holds everything of this project in the cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: PROJECT
