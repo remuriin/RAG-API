@@ -153,7 +153,7 @@ Logs: `journalctl -u rag-agent -f` and `journalctl -u rag-management -f`.
 
 The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs as one pod in the VPS's Kubernetes cluster (k3s), in the namespace `rem-raas`. nginx forwards `/` to that pod's service at the fixed inside-only address `10.43.0.80`. The cluster files are in `RaaS/k8s/`.
 
-A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image, stores it as `ghcr.io/remuriin/raas-web` (tagged `main` and with the commit), and makes the cluster run it (see "Deploy on push"). By hand, on the VPS:
+A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image, stores it as `ghcr.io/remuriin/raas-web` (tagged `main` and with the commit), and makes the cluster run it. How that works, and the script on the VPS that does it, is in the `Cluster` repository. By hand, on the VPS:
 
 ```bash
 sudo kubectl -n rem-raas rollout undo deployment/web        # back to the previous image
@@ -167,36 +167,6 @@ The container sets the caching (`index.html` never cached, `/assets/` cached for
 If the pod or the cluster is down, `/` answers 502 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
 
 Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
-
-## Deploy on push
-
-For anything that runs in the cluster. A project's GitHub workflow builds its image, then logs in to the VPS over SSH as the `deploy` user and asks for one deployment to run that commit's image. `k8s-deploy` sets the image, waits for the new pod, and goes back to the previous image by itself if the new pod is not healthy within two minutes (the workflow then fails).
-
-What a project's key can do is fixed by its line in `authorized_keys`: no shell, no forwarding, only `k8s-deploy` for that project's namespace. The script accepts a deployment name and a full commit and changes nothing but the image's tag. The cluster's own port (6443) stays closed to the internet.
-
-Once, on the VPS:
-
-```bash
-sudo install -o root -g root -m 755 /opt/rag/deploy/k8s-deploy /usr/local/sbin/k8s-deploy
-sudo install -o root -g root -m 440 /opt/rag/deploy/sudoers-deploy /etc/sudoers.d/deploy
-sudo visudo -cf /etc/sudoers.d/deploy
-sudo useradd --system --create-home --shell /bin/sh deploy
-sudo install -d -o root -g root -m 755 /home/deploy/.ssh
-```
-
-Per project, with the project's namespace:
-
-```bash
-sudo /opt/rag/deploy/k8s-add-project my-app
-```
-
-It makes the project's key, adds its line to `/home/deploy/.ssh/authorized_keys` (`restrict,command="sudo /usr/local/sbin/k8s-deploy my-app" ssh-ed25519 ...`), and prints the private half once, for the repository's secret `DEPLOY_KEY`. It keeps no copy.
-
-The workflow's deploy step is the same in every project apart from the deployment names (see `RaaS/.github/workflows/image.yml`). The scripts' checks are tested by `k8s-deploy.test.sh` and `k8s-template.test.sh`.
-
-**A new project** starts from `k8s-template/`: `k8s-new-project` copies its files into the project's repository with the names filled in, and `k8s-template/README.md` is the checklist from there to a live site.
-
-A change to a project's `k8s/*.yaml` is not applied by the workflow: run `sudo kubectl apply -f` for it. That also sets the image back to `:main`, the newest build.
 
 ## Adding an instance by hand
 
