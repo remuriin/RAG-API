@@ -1,0 +1,6 @@
+# Install as /etc/sudoers.d/deploy (mode 440), and check it with: sudo visudo -cf /etc/sudoers.d/deploy
+# The deploy user (what GitHub's workflows log in as) may run the k8s-deploy helper as root, and nothing else.
+# k8s-deploy validates its own arguments.
+# sudo normally hides the caller's variables; the script needs the one that holds what was asked for over SSH.
+Defaults:deploy env_keep += "SSH_ORIGINAL_COMMAND"
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/k8s-deploy

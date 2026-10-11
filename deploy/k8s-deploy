@@ -1,0 +1,48 @@
+#!/bin/bash
+# What a GitHub workflow may do to the cluster: make one deployment run the image built from one commit.
+# Install root-owned at /usr/local/sbin/k8s-deploy (mode 755); sudoers lets the deploy user run this
+# script and nothing else, and each project's SSH key is pinned to its own namespace (see README).
+#
+#   k8s-deploy <namespace>          the request "<deployment> <commit>" is read from SSH_ORIGINAL_COMMAND
+#
+# The namespace comes from the key's line in authorized_keys, never from the caller. The request is
+# what the caller sent over SSH (sshd puts it in that variable), so it is checked letter by letter.
+# Only the image's tag is changed: the image's name is read from the deployment itself, so a caller
+# can never make the cluster run an image from somewhere else.
+#
+# If the new pod is not healthy in time, the deployment goes back to what it ran before and this
+# exits 1, which turns the workflow red. The old pod serves until the new one answers.
+set -euo pipefail
+
+KUBECTL=/usr/local/bin/kubectl
+TIMEOUT=120s
+
+NAME_RE='^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$'
+COMMIT_RE='^[0-9a-f]{40}$'
+
+die() { echo "k8s-deploy: $1" >&2; exit 2; }
+
+[[ $# -eq 1 ]] || die "usage: k8s-deploy <namespace>"
+ns=$1
+read -r dep commit extra <<<"${SSH_ORIGINAL_COMMAND:-}" || true
+
+[[ "$ns" =~ $NAME_RE ]] || die "bad namespace"
+[[ "${dep:-}" =~ $NAME_RE ]] || die "expected a deployment name"
+[[ "${commit:-}" =~ $COMMIT_RE ]] || die "expected a full 40-character commit"
+[[ -z "${extra:-}" ]] || die "too many words"
+
+container=$("$KUBECTL" -n "$ns" get deployment "$dep" -o 'jsonpath={.spec.template.spec.containers[0].name}')
+current=$("$KUBECTL" -n "$ns" get deployment "$dep" -o 'jsonpath={.spec.template.spec.containers[0].image}')
+image="${current%:*}:$commit"
+
+echo "k8s-deploy: $ns/$dep: $current -> $image"
+"$KUBECTL" -n "$ns" set image "deployment/$dep" "$container=$image"
+
+if ! "$KUBECTL" -n "$ns" rollout status "deployment/$dep" --timeout="$TIMEOUT"; then
+  echo "k8s-deploy: the new pod did not become healthy, going back to $current" >&2
+  "$KUBECTL" -n "$ns" get pods -l "app=$dep" >&2 || true
+  "$KUBECTL" -n "$ns" rollout undo "deployment/$dep"
+  "$KUBECTL" -n "$ns" rollout status "deployment/$dep" --timeout="$TIMEOUT" || true
+  exit 1
+fi
+echo "k8s-deploy: $ns/$dep now runs $commit"
