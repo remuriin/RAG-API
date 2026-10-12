@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { HISTORY_CHARS, HISTORY_MESSAGES, parseHistory } from "../src/api/history.js";
 import { rewriteMessage } from "../src/generate/prompts.js";
 import { rewriteQuestion } from "../src/generate/rewrite.js";
+import { clientError } from "../src/util/http-errors.js";
 
 const turn = (role: string, content: unknown) => ({ role, content });
 const past = [
@@ -69,6 +70,12 @@ assert.equal(await rewriteQuestion("and for exchanges?", past, broken.generate, 
 assert.equal(broken.calls(), 1, "another failure is not retried");
 
 assert.equal((await rewriteQuestion("x", past, model(0, "y".repeat(5000)).generate)).length, 2000, "a runaway reply is cut");
+
+// a request that is too large is told the limit of the route it hit, not the file limit
+const tooLarge = (limit?: number) => clientError({ status: 413, type: "entity.too.large", limit })?.message;
+assert.equal(tooLarge(100 * 1024), "The request is too large. The limit here is 100 KB.");
+assert.equal(tooLarge(500 * 1024), "The request is too large. The limit here is 500 KB.");
+assert.equal(tooLarge(), "The request is too large.");
 
 console.warn = quiet;
 console.log("conversation memory: all checks passed");

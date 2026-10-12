@@ -6,7 +6,14 @@ export function clientError(err: any): { status: number; message: string } | nul
 
   switch (err?.type) {
     case "entity.too.large":
-      return { status: 413, message: "The request is too large. Files can be up to 500 KB." };
+      // the parser that refused it knows its own limit: 500 KB for a file, 100 KB for a question
+      return {
+        status: 413,
+        message:
+          typeof err.limit === "number"
+            ? `The request is too large. The limit here is ${Math.round(err.limit / 1024)} KB.`
+            : "The request is too large.",
+      };
     case "entity.parse.failed":
       return { status: 400, message: "The request body is not valid JSON." };
     case "charset.unsupported":
