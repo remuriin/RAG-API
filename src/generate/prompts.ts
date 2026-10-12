@@ -25,12 +25,27 @@ function otherCompanyRule(productName?: string | null): string[] {
   ];
 }
 
+// What a markdown answer may contain, each thing with the case that earns it. The web app's API
+// reference promises callers exactly this list, so a change here is a change there.
+const MARKDOWN_RULES = [
+  "- The reply is shown as markdown. Format only as much as the reply needs. A reply of one or two sentences is plain sentences: no bold, no list, no heading.",
+  "- Three or more steps that happen in order: always a numbered list, one step on each line, even when the passage writes them as one sentence.",
+  "- Three or more separate options, cases or items: a bulleted list, one on each line.",
+  "- When the reply covers two or more distinct subjects, for example because the question asks about two things, put a short heading (written with ##) over each part. A reply about one subject never has a heading.",
+  "- In a longer reply, **bold** only the few things the person must not miss, such as an amount, a deadline or a limit. Never a whole sentence.",
+  "- Never write a web address bare. Write it as a markdown link, [words that say where it leads](the address), using the address exactly as the passage has it.",
+  "- Something the person types or copies exactly, such as a promo code or a reference number: backticks.",
+  "- Never use tables, images, quote blocks, divider lines or HTML.",
+];
+
 function styleRules(markdown?: boolean): string[] {
   return [
     "- Reply in the same language the question is written in.",
-    markdown
-      ? "- You may use simple markdown (numbered or bulleted lists, **bold**) where it makes the reply clearer."
-      : '- Write plain text only: no markdown such as **bold**, # headings, or backticks. For steps or lists, use real line breaks: every item goes on its own line, starting with "1." or "-", never several items run together in one paragraph.',
+    ...(markdown
+      ? MARKDOWN_RULES
+      : [
+          '- Write plain text only: no markdown such as **bold**, # headings, or backticks. For steps or lists, use real line breaks: every item goes on its own line, starting with "1." or "-", never several items run together in one paragraph.',
+        ]),
     "- Keep button, screen, and menu names in double quotes, exactly as they are written.",
   ];
 }
