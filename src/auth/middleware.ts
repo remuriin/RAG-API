@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
-import { getProductName } from "../db/instance.js";
+import { getInstanceSettings } from "../db/instance.js";
 import { isInternalToken, verifyInternalToken } from "./internal.js";
 import { hashApiKey } from "./keys.js";
 
@@ -19,13 +19,15 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
         res.status(401).json({ error: "Invalid internal token" });
         return;
       }
-      res.locals.productName = await getProductName();
+      const settings = await getInstanceSettings();
+      res.locals.productName = settings.productName;
+      res.locals.persona = settings.persona;
       next();
       return;
     }
 
     const result = await pool.query(
-      `SELECT k.instance_id, i.product_name
+      `SELECT k.instance_id, i.product_name, i.persona
        FROM api_keys k
        JOIN instances i ON i.id = k.instance_id
        WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
@@ -40,6 +42,7 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     }
 
     res.locals.productName = row.product_name;
+    res.locals.persona = row.persona;
     next();
   } catch (err) {
     next(err);

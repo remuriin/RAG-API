@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { generateApiKey } from "../auth/keys.js";
 import { pool, STATS_TIMEZONE } from "../db/client.js";
+import type { Persona } from "../generate/prompts.js";
 import { MAX_INSTANCES_PER_USER, PUBLIC_BASE_URL } from "./config.js";
 
 export type InstanceStatus = "pending" | "active" | "failed" | "deleting";
@@ -10,6 +11,7 @@ export interface InstanceRecord {
   ownerUid: string;
   name: string | null;
   productName: string | null;
+  persona: Persona;
   status: InstanceStatus;
   errorMessage: string | null;
   url: string;
@@ -26,7 +28,7 @@ const queryCount = (filter = "") =>
   `(SELECT COALESCE(SUM(q.count), 0)::int FROM query_counts q WHERE q.instance_id = i.id${filter})`;
 
 const SELECT_INSTANCE = `
-  SELECT i.id, i.owner_uid, i.name, i.product_name, i.status, i.error_message, i.port, i.created_at,
+  SELECT i.id, i.owner_uid, i.name, i.product_name, i.persona, i.status, i.error_message, i.port, i.created_at,
          ${queryCount(` AND q.day = ${TODAY}`)} AS queries_today,
          ${queryCount(` AND q.day > ${TODAY} - 7`)} AS queries_7d,
          ${queryCount()} AS queries_total,
@@ -43,6 +45,7 @@ function toRecord(row: any): InstanceRecord {
     ownerUid: row.owner_uid,
     name: row.name,
     productName: row.product_name,
+    persona: row.persona,
     status: row.status,
     errorMessage: row.error_message,
     url: `${PUBLIC_BASE_URL}/i/${row.id}`,
@@ -97,11 +100,11 @@ export async function createInstance(
   return created ? getInstance(id) : null;
 }
 
-// Changes the label and/or the assistant's product name. The instance reads its product name
-// on every request, so the next answer already uses it. productName: null clears it.
+// Changes the label, the assistant's product name and/or its persona. The instance reads the last two
+// on every request, so the next answer already uses them. productName: null clears it.
 export async function updateInstance(
   id: string,
-  changes: { name?: string; productName?: string | null }
+  changes: { name?: string; productName?: string | null; persona?: Persona }
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [id];
@@ -112,6 +115,10 @@ export async function updateInstance(
   if (changes.productName !== undefined) {
     values.push(changes.productName);
     sets.push(`product_name = $${values.length}`);
+  }
+  if (changes.persona !== undefined) {
+    values.push(changes.persona);
+    sets.push(`persona = $${values.length}`);
   }
   if (sets.length === 0) return;
   await pool.query(`UPDATE instances SET ${sets.join(", ")} WHERE id = $1`, values);

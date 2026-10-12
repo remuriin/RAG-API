@@ -7,6 +7,8 @@ import {
   answerSystemInstruction,
   noMatchMessage,
   noMatchSystemInstruction,
+  DEFAULT_PERSONA,
+  PERSONAS,
   type ChatTurn,
   type PromptOptions,
 } from "./prompts.js";
@@ -18,7 +20,8 @@ const CHAT_MODEL = "gemini-3.1-flash-lite";
 const SIMILARITY_FLOOR = 0.625;
 const TEMPERATURE = 0.2; // steady wording from run to run
 
-const FALLBACK_ANSWER = "I don't have info on that yet.";
+// The fixed line for when the model returns nothing usable, in the service's own voice
+const fallbackAnswer = (options: PromptOptions) => PERSONAS[options.persona ?? DEFAULT_PERSONA].fallback;
 
 // One or more [n] markers in a row, with the spaces and commas between them, so that
 // "city [1], [2]." becomes "city." and not "city,."
@@ -80,7 +83,7 @@ async function answerFromChunks(
   const citedChunks = usable.filter((_, i) => cited.has(i + 1));
 
   return {
-    answer: cleanAnswer || FALLBACK_ANSWER,
+    answer: cleanAnswer || fallbackAnswer(options),
     sources: citedChunks.map((c) => ({
       source: c.source,
       heading: c.headingPath,
@@ -92,7 +95,7 @@ async function answerFromChunks(
 // Nothing in the files is close enough to the message. The model may greet or say what it can
 // help with, knowing only the topic names; it is never shown document text on this path.
 async function replyWithoutMatch(question: string, options: PromptOptions): Promise<RagAnswer> {
-  const fallback: RagAnswer = { answer: FALLBACK_ANSWER, sources: [], answered: false };
+  const fallback: RagAnswer = { answer: fallbackAnswer(options), sources: [], answered: false };
 
   try {
     const topics = await listTopics();

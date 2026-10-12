@@ -52,6 +52,7 @@ sudo install -d -o root -g root -m 755 /etc/nginx/rag-instances
 sudo cp /opt/rag/deploy/nginx/headers.conf      /etc/nginx/snippets/rag-headers.conf
 sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
 sudo cp /opt/rag/deploy/nginx/app-location.conf /etc/nginx/snippets/rag-app.conf
+sudo cp /opt/rag/deploy/nginx/errors.conf       /etc/nginx/snippets/rag-errors.conf
 sudo cp /opt/rag/deploy/nginx/instance.conf.example /etc/nginx/snippets/rag-instance.template
 sudo cp /opt/rag/deploy/nginx/rag.conf /etc/nginx/sites-available/rag.conf
 sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS instances (
   port INT UNIQUE,
   name TEXT,
   product_name TEXT,
+  persona TEXT NOT NULL DEFAULT 'support' CHECK (persona IN ('support', 'tutor', 'guide', 'reference')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('pending', 'active', 'failed', 'deleting')),
   error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -47,6 +48,11 @@ ALTER TABLE instances ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
   CHECK (status IN ('pending', 'active', 'failed', 'deleting'));
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS error_message TEXT;
+
+-- the voice the assistant answers in (PERSONAS in src/generate/prompts.ts holds the same four names).
+-- Rows from before this column keep the voice they always had.
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS persona TEXT NOT NULL DEFAULT 'support'
+  CHECK (persona IN ('support', 'tutor', 'guide', 'reference'));
 
 -- the agent assigns the port while provisioning
 ALTER TABLE instances ALTER COLUMN port DROP NOT NULL;

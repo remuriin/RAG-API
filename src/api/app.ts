@@ -5,6 +5,7 @@ import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
 import { recordQuery } from "../db/stats.js";
 import { generateAnswer, standaloneQuestion } from "../generate/answer.js";
+import { isPersona } from "../generate/prompts.js";
 import { MAX_QUESTION_CHARS } from "../generate/rewrite.js";
 import { DocumentTooLongError, kindOf, type FileKind } from "../ingest/convert.js";
 import { DocumentExistsError, EmptyDocumentError, IngestQueueFullError, ingestDocument } from "../ingest/pipeline.js";
@@ -185,6 +186,8 @@ export function createApp() {
       const chunks = await retrieveRelevantChunks(standalone, topK);
       const answer = await generateAnswer(standalone, chunks, {
         productName: res.locals.productName,
+        // a name this build does not know (a newer column value) falls back to the default voice
+        persona: isPersona(res.locals.persona) ? res.locals.persona : undefined,
         markdown,
       });
 

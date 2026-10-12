@@ -5,6 +5,7 @@ import { clientError } from "../util/http-errors.js";
 import { isUuid } from "../util/uuid.js";
 import { requireUser, type AuthUser } from "./auth.js";
 import { CORS_ORIGIN, MAX_INSTANCES_PER_USER } from "./config.js";
+import { isPersona, PERSONAS, type Persona } from "../generate/prompts.js";
 import { forwardToInstance, InstanceUnreachableError } from "./forward.js";
 import {
   createInstance,
@@ -219,14 +220,14 @@ export function createManagementApp() {
     })
   );
 
-  // Rename the service and/or change what the assistant calls itself
+  // Rename the service, change what the assistant calls itself and/or the voice it answers in
   api.patch(
     "/instances/:id",
     wrap(async (req, res) => {
       const instance = await loadOwned(req, res);
       if (!instance) return;
 
-      const changes: { name?: string; productName?: string | null } = {};
+      const changes: { name?: string; productName?: string | null; persona?: Persona } = {};
       if (req.body?.name !== undefined) {
         const name = cleanName(req.body.name);
         if (!name) {
@@ -247,8 +248,15 @@ export function createManagementApp() {
           changes.productName = productName;
         }
       }
-      if (changes.name === undefined && changes.productName === undefined) {
-        res.status(400).json({ error: 'Send "name" and/or "productName"' });
+      if (req.body?.persona !== undefined) {
+        if (!isPersona(req.body.persona)) {
+          res.status(400).json({ error: `"persona" must be one of: ${Object.keys(PERSONAS).join(", ")}` });
+          return;
+        }
+        changes.persona = req.body.persona;
+      }
+      if (changes.name === undefined && changes.productName === undefined && changes.persona === undefined) {
+        res.status(400).json({ error: 'Send "name", "productName" and/or "persona"' });
         return;
       }
 
