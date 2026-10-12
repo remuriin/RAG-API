@@ -139,7 +139,8 @@ export function createManagementApp() {
 
   const api = express.Router();
   api.use(requireUser);
-  api.use(express.json({ limit: "10kb" }));
+  // as large as an instance accepts: the chat test relays a question with its conversation
+  api.use(express.json({ limit: "100kb" }));
 
   api.get(
     "/me",

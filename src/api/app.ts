@@ -4,17 +4,18 @@ import { requireApiKey } from "../auth/middleware.js";
 import { INSTANCE_ID } from "../config.js";
 import { pool } from "../db/client.js";
 import { recordQuery } from "../db/stats.js";
-import { generateAnswer } from "../generate/answer.js";
+import { generateAnswer, standaloneQuestion } from "../generate/answer.js";
+import { MAX_QUESTION_CHARS } from "../generate/rewrite.js";
 import { DocumentExistsError, EmptyDocumentError, IngestQueueFullError, ingestDocument } from "../ingest/pipeline.js";
 import { deleteDocument, listDocuments } from "../ingest/store.js";
 import { retrieveRelevantChunks } from "../retrieve/search.js";
 import { clientError } from "../util/http-errors.js";
+import { parseHistory } from "./history.js";
 import { isRetryable } from "../util/retry.js";
 
 const SOURCE_RE = /^(?=.{4,100}$)[A-Za-z0-9][A-Za-z0-9._-]*\.md$/i; // only .md files
 const MARKDOWN_TYPES = ["text/markdown", "text/x-markdown", "text/plain"];
 const MAX_DOCUMENT_SIZE = "500kb";
-const MAX_QUESTION_CHARS = 2000;
 const DEFAULT_TOP_K = 5;
 const MAX_TOP_K = 20;
 
@@ -125,7 +126,9 @@ export function createApp() {
     express.json({ limit: "100kb" }),
     wrap(async (req, res) => {
       // markdown: the caller's app renders markdown; otherwise answers are plain text
+      // history: the earlier messages of the conversation, so a follow-up can be understood
       const { question, topK = DEFAULT_TOP_K, markdown = false } = req.body ?? {};
+      const history = parseHistory(req.body?.history);
 
       if (typeof question !== "string" || !question.trim()) {
         res.status(400).json({ error: '"question" is required' });
@@ -145,8 +148,17 @@ export function createApp() {
         return;
       }
 
-      const chunks = await retrieveRelevantChunks(question.trim(), topK);
-      const answer = await generateAnswer(question.trim(), chunks, {
+      if (!history) {
+        res.status(400).json({
+          error: '"history" must be a list of { "role": "user" or "assistant", "content": text } messages',
+        });
+        return;
+      }
+
+      // the search and the answer both get the question as it reads on its own
+      const standalone = await standaloneQuestion(question.trim(), history);
+      const chunks = await retrieveRelevantChunks(standalone, topK);
+      const answer = await generateAnswer(standalone, chunks, {
         productName: res.locals.productName,
         markdown,
       });

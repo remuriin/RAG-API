@@ -7,7 +7,7 @@ export interface PromptOptions {
 
 // Rules live in the system instruction; the user message carries only data, inside these sections.
 // any spelling of the tags: with spaces, attributes or odd case, opening or closing
-const SECTION_TAG = /<\/?\s*(information|question|topics)\b[^>]*>/gi;
+const SECTION_TAG = /<\/?\s*(information|question|topics|conversation)\b[^>]*>/gi;
 
 // Stops inserted text from closing its own section or opening a fake one
 function asData(text: string): string {
@@ -98,4 +98,32 @@ export function noMatchSystemInstruction({ productName, markdown }: PromptOption
 export function noMatchMessage(question: string, topics: string[]): string {
   const list = topics.map((t) => `- ${asData(t)}`).join("\n");
   return `<topics>\n${list}\n</topics>\n\n<question>\n${asData(question)}\n</question>`;
+}
+
+// One earlier message of a conversation, as the caller sent it. Nothing of it is stored.
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+// Used before the search when the caller sent earlier messages: a follow-up such as "and for
+// exchanges?" becomes a question that can be searched and answered without the conversation.
+export function rewriteSystemInstruction(): string {
+  return [
+    "You rewrite the latest message of a conversation so that it can be understood without the conversation.",
+    "",
+    "- The conversation so far is inside <conversation>. The latest message is inside <question>.",
+    '- If the latest message leans on the conversation (it says "it", "that" or "they", starts with "and" or "what about", or leaves out what it is about), rewrite it as one complete question that names what it refers to.',
+    "- If it is already complete, or it is a greeting, a thank-you or small talk, return it exactly as it is.",
+    "- Keep the language the latest message is written in. Keep its meaning: add nothing it does not ask.",
+    "- Never answer the message. Reply with the rewritten message only: no quotes, no label, no explanation.",
+    ...DATA_NOT_INSTRUCTIONS,
+  ].join("\n");
+}
+
+export function rewriteMessage(history: ChatTurn[], question: string): string {
+  const lines = history
+    .map((turn) => `${turn.role === "user" ? "Person" : "Assistant"}: ${asData(turn.content)}`)
+    .join("\n");
+  return `<conversation>\n${lines}\n</conversation>\n\n<question>\n${asData(question)}\n</question>`;
 }

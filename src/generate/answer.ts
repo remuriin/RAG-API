@@ -7,8 +7,10 @@ import {
   answerSystemInstruction,
   noMatchMessage,
   noMatchSystemInstruction,
+  type ChatTurn,
   type PromptOptions,
 } from "./prompts.js";
+import { rewriteQuestion } from "./rewrite.js";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const CHAT_MODEL = "gemini-3.1-flash-lite";
@@ -21,6 +23,18 @@ const FALLBACK_ANSWER = "I don't have info on that yet.";
 // One or more [n] markers in a row, with the spaces and commas between them, so that
 // "city [1], [2]." becomes "city." and not "city,."
 const CITATION_RUN = /\s*\[\d+(?:\s*,\s*\d+)*\](?:\s*,?\s*\[\d+(?:\s*,\s*\d+)*\])*/g;
+
+// A follow-up question made to stand on its own, from the earlier messages the caller sent
+export function standaloneQuestion(question: string, history: ChatTurn[]): Promise<string> {
+  return rewriteQuestion(question, history, async (systemInstruction, message) => {
+    const result = await ai.models.generateContent({
+      model: CHAT_MODEL,
+      contents: message,
+      config: { systemInstruction, temperature: 0 },
+    });
+    return result.text ?? "";
+  });
+}
 
 export async function generateAnswer(
   question: string,
