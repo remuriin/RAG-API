@@ -1,4 +1,5 @@
 import { chunkMarkdown } from "./chunker.js";
+import { toMarkdown, type FileKind } from "./convert.js";
 import { embedBatch } from "./embedder.js";
 import {
   activateDocument,
@@ -39,21 +40,26 @@ let waiting = 0;
 let queue: Promise<unknown> = Promise.resolve();
 
 // Adds a new document. An existing document is never overwritten; it has to be deleted first.
-export function ingestDocument(source: string, markdown: string): Promise<IngestResult> {
+// The body is the file as it was uploaded: text, or the bytes of a PDF.
+export function ingestDocument(source: string, body: string | Buffer, kind: FileKind): Promise<IngestResult> {
   if (waiting >= MAX_WAITING) return Promise.reject(new IngestQueueFullError());
   waiting++;
   const run = queue.then(() => {
     waiting--;
-    return runIngest(source, markdown);
+    return runIngest(source, body, kind);
   });
   queue = run.catch(() => {});
   return run;
 }
 
-async function runIngest(source: string, markdown: string): Promise<IngestResult> {
+async function runIngest(source: string, body: string | Buffer, kind: FileKind): Promise<IngestResult> {
+  // first, because it is cheap: a name that is taken must not cost a conversion
+  if (await readyDocumentExists(source)) throw new DocumentExistsError(source);
+
+  // Nothing is stored until the file has become markdown, so a failed conversion leaves nothing behind
+  const markdown = await toMarkdown(kind, body);
   const chunks = chunkMarkdown(markdown); // throws DocumentTooFragmentedError past the chunk limit
   if (chunks.length === 0) throw new EmptyDocumentError();
-  if (await readyDocumentExists(source)) throw new DocumentExistsError(source);
 
   const documentId = await createProcessingDocument(source, markdown);
 

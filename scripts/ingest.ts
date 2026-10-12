@@ -20,7 +20,7 @@ async function main() {
 
   for (const file of files) {
     await deleteDocument(file); // documents can't be overwritten, so re-running drops the stored copy first
-    const result = await ingestDocument(file, readFileSync(join(DOCS_DIR, file), "utf-8"));
+    const result = await ingestDocument(file, readFileSync(join(DOCS_DIR, file), "utf-8"), "markdown");
     console.log(`  ${file} -> ${result.chunks} chunks`);
   }
 

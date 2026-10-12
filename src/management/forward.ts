@@ -16,7 +16,7 @@ export async function forwardToInstance(
   instance: { id: string; port: number },
   method: string,
   path: string,
-  options: { body?: string; contentType?: string } = {}
+  options: { body?: string | Buffer; contentType?: string } = {}
 ): Promise<Forwarded> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${signInternalToken(instance.id)}`,
@@ -28,7 +28,8 @@ export async function forwardToInstance(
     response = await fetch(`http://127.0.0.1:${instance.port}${path}`, {
       method,
       headers,
-      body: options.body,
+      // a Buffer is sent as its bytes; the cast is only for the type of its backing store
+      body: options.body as BodyInit | undefined,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {

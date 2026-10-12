@@ -6,6 +6,7 @@ import { pool } from "../db/client.js";
 import { recordQuery } from "../db/stats.js";
 import { generateAnswer, standaloneQuestion } from "../generate/answer.js";
 import { MAX_QUESTION_CHARS } from "../generate/rewrite.js";
+import { DocumentTooLongError, kindOf, type FileKind } from "../ingest/convert.js";
 import { DocumentExistsError, EmptyDocumentError, IngestQueueFullError, ingestDocument } from "../ingest/pipeline.js";
 import { deleteDocument, listDocuments } from "../ingest/store.js";
 import { retrieveRelevantChunks } from "../retrieve/search.js";
@@ -13,9 +14,20 @@ import { clientError } from "../util/http-errors.js";
 import { parseHistory } from "./history.js";
 import { isRetryable } from "../util/retry.js";
 
-const SOURCE_RE = /^(?=.{4,100}$)[A-Za-z0-9][A-Za-z0-9._-]*\.md$/i; // only .md files
-const MARKDOWN_TYPES = ["text/markdown", "text/x-markdown", "text/plain"];
-const MAX_DOCUMENT_SIZE = "500kb";
+const SOURCE_RE = /^(?=.{4,100}$)[A-Za-z0-9][A-Za-z0-9._-]*\.(md|txt|pdf|html?|xml)$/i;
+// The content types each kind of file may arrive with; the first is the one named in the error message
+const CONTENT_TYPES: Record<FileKind, string[]> = {
+  markdown: ["text/markdown", "text/x-markdown", "text/plain"],
+  text: ["text/plain"],
+  html: ["text/html", "text/plain"],
+  xml: ["application/xml", "text/xml", "text/plain"],
+  pdf: ["application/pdf"],
+};
+const TEXT_TYPES = [...new Set(Object.values(CONTENT_TYPES).flat())].filter((type) => type !== "application/pdf");
+const MAX_TEXT_SIZE = "500kb";
+const MAX_PDF_SIZE = "10mb";
+const NAME_RULE =
+  "Invalid file name. It must end in .md, .txt, .pdf, .html or .xml and use only letters, numbers, dots, dashes and underscores (max 100 characters).";
 const DEFAULT_TOP_K = 5;
 const MAX_TOP_K = 20;
 
@@ -58,40 +70,53 @@ export function createApp() {
     })
   );
 
-  // Add one markdown file. The body is the raw markdown. Existing documents are never
-  // overwritten: to change one, delete it and add it again.
+  // Add one file. The body is the file itself: text, or the bytes of a PDF. A PDF, a web page and XML
+  // are turned into markdown first. Existing documents are never overwritten: to change one, delete
+  // it and add it again.
   app.post(
     "/documents/:source",
-    express.text({ type: MARKDOWN_TYPES, limit: MAX_DOCUMENT_SIZE }),
+    express.text({ type: TEXT_TYPES, limit: MAX_TEXT_SIZE }),
+    express.raw({ type: "application/pdf", limit: MAX_PDF_SIZE }),
     wrap(async (req, res) => {
       const source = req.params.source;
-      if (!SOURCE_RE.test(source)) {
-        res.status(400).json({
-          error:
-            "Invalid document name. It must end in .md and use only letters, numbers, dots, dashes and underscores (max 100 characters).",
-        });
+      const kind = SOURCE_RE.test(source) ? kindOf(source) : null;
+      if (!kind) {
+        res.status(400).json({ error: NAME_RULE });
         return;
       }
-      // express.text leaves the body unparsed when the Content-Type isn't one of MARKDOWN_TYPES
+      // a body that arrived with another Content-Type was left unread by the two parsers above
       const contentType = (req.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-      if (!MARKDOWN_TYPES.includes(contentType)) {
-        res.status(415).json({ error: "Only markdown is accepted. Send the file with Content-Type: text/markdown" });
+      if (!CONTENT_TYPES[kind].includes(contentType)) {
+        res.status(415).json({ error: `Send this file with Content-Type: ${CONTENT_TYPES[kind][0]}` });
         return;
       }
-      if (typeof req.body !== "string" || !req.body.trim()) {
-        res.status(400).json({ error: "Send the markdown as the request body" });
-        return;
-      }
-      if (req.body.includes("\0")) {
-        res.status(400).json({ error: "The file is not text. Only .md files are accepted." });
-        return;
+      const body: unknown = req.body;
+      if (kind === "pdf") {
+        // every PDF starts with these five bytes; anything else is another file with a .pdf name
+        if (!Buffer.isBuffer(body) || body.subarray(0, 5).toString("latin1") !== "%PDF-") {
+          res.status(400).json({ error: "This is not a PDF file." });
+          return;
+        }
+      } else {
+        if (typeof body !== "string" || !body.trim()) {
+          res.status(400).json({ error: "Send the file as the request body" });
+          return;
+        }
+        if (body.includes("\0")) {
+          res.status(400).json({ error: "The file is not text." });
+          return;
+        }
       }
 
       try {
-        const document = await ingestDocument(source, req.body);
+        const document = await ingestDocument(source, body as string | Buffer, kind);
         res.status(201).json({ ...document, status: "ready" });
       } catch (err) {
-        if (err instanceof EmptyDocumentError || err instanceof DocumentTooFragmentedError) {
+        if (
+          err instanceof EmptyDocumentError ||
+          err instanceof DocumentTooFragmentedError ||
+          err instanceof DocumentTooLongError
+        ) {
           res.status(400).json({ error: err.message });
           return;
         }

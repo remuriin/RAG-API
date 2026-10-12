@@ -168,6 +168,15 @@ If the pod or the cluster is down, `/` answers 502 while `/api/` and `/i/` keep 
 
 Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
 
+## Files a service accepts
+
+A service takes `.md`, `.txt`, `.pdf`, `.html` and `.xml` files. Markdown and plain text are stored as they are. A PDF, a web page and XML are first written out as markdown by a Gemini model, and only that markdown is kept.
+
+- Limits: 10 MB for a PDF, 500 KB for the others. nginx allows 11 MB (`client_max_body_size` in the site file), the service applies the real limit per kind.
+- Models: `gemini-3.8-flash` first, `gemini-3.5-flash-lite` when the first is busy or does not start replying within 25 seconds. Both differ from the model that answers questions, so converting never uses the answers' quota. The two names are the defaults in `src/ingest/convert.ts`. A service also reads `GEMINI_CONVERT_MODEL` and `GEMINI_CONVERT_FALLBACK_MODEL` from its environment, but the agent does not write those into a service's env file, so today a change means changing the defaults, building and restarting the services.
+- Time: a conversion gets 230 seconds, because the whole upload has to finish inside the 5 minutes nginx and the relay wait. A file that needs longer is refused whole. In practice that is about 60 dense pages.
+- `npx tsx scripts/check-convert.ts` checks the rules with a pretend model.
+
 ## Adding an instance by hand
 
 Only needed without the control plane. The instance must already exist in the `instances` table with an API key; create it from a machine that has the repo and database access:

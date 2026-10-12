@@ -1,3 +1,8 @@
+function formatLimit(bytes: number): string {
+  const kb = Math.round(bytes / 1024);
+  return kb >= 1024 ? `${Math.round(kb / 1024)} MB` : `${kb} KB`;
+}
+
 // Turns the errors Express and body-parser throw into a status and a message meant for people.
 // Returns null for anything that is the server's own fault, which the caller logs and answers with 500.
 export function clientError(err: any): { status: number; message: string } | null {
@@ -6,12 +11,12 @@ export function clientError(err: any): { status: number; message: string } | nul
 
   switch (err?.type) {
     case "entity.too.large":
-      // the parser that refused it knows its own limit: 500 KB for a file, 100 KB for a question
+      // the parser that refused it knows its own limit: 10 MB for a PDF, 500 KB for a text file, 100 KB for a question
       return {
         status: 413,
         message:
           typeof err.limit === "number"
-            ? `The request is too large. The limit here is ${Math.round(err.limit / 1024)} KB.`
+            ? `The request is too large. The limit here is ${formatLimit(err.limit)}.`
             : "The request is too large.",
       };
     case "entity.parse.failed":

@@ -80,7 +80,7 @@ async function relay(
   instance: { id: string; port: number },
   method: string,
   path: string,
-  options: { body?: string; contentType?: string } = {}
+  options: Parameters<typeof forwardToInstance>[3] = {}
 ): Promise<void> {
   try {
     const forwarded = await forwardToInstance(instance, method, path, options);
@@ -270,13 +270,14 @@ export function createManagementApp() {
 
   api.post(
     "/instances/:id/documents/:name",
-    express.text({ type: "*/*", limit: "500kb" }),
+    // read as bytes, so a PDF passes through unchanged; the instance applies each kind's own limit
+    express.raw({ type: "*/*", limit: "10mb" }),
     wrap(async (req, res) => {
       const instance = await loadRunning(req, res);
       if (!instance) return;
-      if (typeof req.body !== "string") {
+      if (!Buffer.isBuffer(req.body)) {
         // express.json already consumed a JSON body, and an empty request has no body at all
-        res.status(415).json({ error: "Only markdown is accepted. Send the file with Content-Type: text/markdown" });
+        res.status(415).json({ error: "Send the file as the request body, with the Content-Type of its kind" });
         return;
       }
       await relay(res, instance, "POST", `/documents/${encodeURIComponent(req.params.name)}`, {

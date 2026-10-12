@@ -75,6 +75,7 @@ assert.equal((await rewriteQuestion("x", past, model(0, "y".repeat(5000)).genera
 const tooLarge = (limit?: number) => clientError({ status: 413, type: "entity.too.large", limit })?.message;
 assert.equal(tooLarge(100 * 1024), "The request is too large. The limit here is 100 KB.");
 assert.equal(tooLarge(500 * 1024), "The request is too large. The limit here is 500 KB.");
+assert.equal(tooLarge(10 * 1024 * 1024), "The request is too large. The limit here is 10 MB.");
 assert.equal(tooLarge(), "The request is too large.");
 
 console.warn = quiet;
