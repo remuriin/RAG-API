@@ -1,0 +1,57 @@
+# On a push to main: build the backend's container image.
+# The VPS never builds anything.
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/image.yml'
+  # also a "Run workflow" button on the Actions page
+  workflow_dispatch:
+
+# only pushes to this repository run it; a pull request from a fork never does
+permissions:
+  contents: read
+  packages: write
+
+# two pushes in a row build one after the other, never at once
+concurrency: image
+
+jobs:
+  build:
+    # an ARM machine, the same kind of CPU as the VPS, so nothing is emulated
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # "tsc" runs inside this build, so a type error stops the workflow here
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          # one tag that names this exact commit, and "main" that always points at the newest
+          tags: |
+            ghcr.io/remuriin/rag-api:${{ github.sha }}
+            ghcr.io/remuriin/rag-api:main
+          # the image is told its own name, commit included (see the Dockerfile)
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/remuriin/RAG-API
