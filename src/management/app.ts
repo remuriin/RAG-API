@@ -4,7 +4,7 @@ import { pool } from "../db/client.js";
 import { clientError } from "../util/http-errors.js";
 import { isUuid } from "../util/uuid.js";
 import { requireUser, type AuthUser } from "./auth.js";
-import { CORS_ORIGIN, MAX_INSTANCES_PER_USER } from "./config.js";
+import { CORS_ORIGIN, INSTANCE_URL, MAX_INSTANCES_PER_USER } from "./config.js";
 import { isPersona, PERSONAS, type Persona } from "../generate/prompts.js";
 import { forwardToInstance, InstanceUnreachableError } from "./forward.js";
 import {
@@ -61,10 +61,11 @@ async function loadOwned(req: Request, res: Response): Promise<InstanceRecord | 
 }
 
 // For routes that talk to the running service: it must be the caller's, and up.
-async function loadRunning(req: Request, res: Response): Promise<{ id: string; port: number } | null> {
+async function loadRunning(req: Request, res: Response): Promise<{ id: string; port: number | null } | null> {
   const instance = await loadOwned(req, res);
   if (!instance) return null;
-  if (instance.status !== "active" || instance.port === null) {
+  // in the cluster a service is found by its name; only on a development machine does it need a port
+  if (instance.status !== "active" || (!INSTANCE_URL && instance.port === null)) {
     res.status(409).json({ error: `The service is not active yet (it is ${instance.status})` });
     return null;
   }
@@ -78,7 +79,7 @@ async function loadRunning(req: Request, res: Response): Promise<{ id: string; p
 // Passes the request to the service and hands its reply back unchanged
 async function relay(
   res: Response,
-  instance: { id: string; port: number },
+  instance: { id: string; port: number | null },
   method: string,
   path: string,
   options: Parameters<typeof forwardToInstance>[3] = {}

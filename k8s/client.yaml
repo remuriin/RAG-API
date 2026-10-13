@@ -1,10 +1,14 @@
 # What one client service looks like in the cluster: "keep one pod of the backend's image running as
-# this service", and a name the pod is found by. The control agent creates exactly this for every
-# service; this file is the same thing written out, for reading and for setting one up by hand:
+# this service", and a name the pod is found by.
 #
-#   sed 's/__INSTANCE_ID__/<the service id>/g' k8s/client.example.yaml | sudo kubectl apply -f -
+# This file is the control agent's template: it fills in the two placeholders and hands the result to
+# Kubernetes for every service it sets up (src/agent/system.ts). It is copied into the image.
+# Only __INSTANCE_ID__ (a checked UUID) and __IMAGE__ (the agent's own image) are ever substituted.
 #
-# Only __INSTANCE_ID__ is ever substituted.
+# To set one up by hand:
+#   sed 's/__INSTANCE_ID__/<the service id>/g; s#__IMAGE__#ghcr.io/remuriin/rag-api:main#' k8s/client.yaml | sudo kubectl apply -f -
+#
+# The first document must stay the Deployment and the second the Service: the agent sends them in that order.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,8 +39,8 @@ spec:
       enableServiceLinks: false
       containers:
         - name: rag
-          image: ghcr.io/remuriin/rag-api:main
-          imagePullPolicy: Always
+          # the exact build the control agent itself runs, so all pieces are always the same code
+          image: __IMAGE__
           ports:
             - containerPort: 3000
           # the database address, the Gemini key and the internal secret: the same for every service,

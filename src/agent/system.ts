@@ -1,117 +1,135 @@
-import { execFile } from "child_process";
-import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { join } from "path";
-import { promisify } from "util";
+import { readFile } from "fs/promises";
 import { isUuid } from "../util/uuid.js";
-import { DRY_RUN, ENV_DIR, GEMINI_API_KEY, INSTANCE_DATABASE_URL, INTERNAL_SECRET, RAG_CTL } from "./config.js";
+import {
+  CLIENT_TEMPLATE,
+  CLIENTS_NAMESPACE,
+  DRY_RUN,
+  KUBE_API,
+  KUBE_TOKEN_FILE,
+  RAG_IMAGE,
+  READY_TIMEOUT_MS,
+} from "./config.js";
 
-const execFileAsync = promisify(execFile);
+const POLL_INTERVAL_MS = 500;
+const CALL_TIMEOUT_MS = 15000;
 
-const HEALTH_TIMEOUT_MS = 15000;
-const HEALTH_INTERVAL_MS = 500;
-
-// Instance ids end up in file paths and unit names, so nothing but a UUID is ever accepted.
+// Instance ids end up in object names and in the template, so nothing but a UUID is ever accepted.
 function assertUuid(id: string): void {
   if (!isUuid(id)) throw new Error(`Refusing to act on a non-UUID instance id: ${id}`);
 }
 
-const envPath = (id: string) => join(ENV_DIR, `${id}.env`);
+const deploymentPath = (id: string) => `/apis/apps/v1/namespaces/${CLIENTS_NAMESPACE}/deployments/rag-${id}`;
+const servicePath = (id: string) => `/api/v1/namespaces/${CLIENTS_NAMESPACE}/services/rag-${id}`;
 
-// systemd reads EnvironmentFile with shell-like quoting: inside double quotes only \" and \\ are special
-function quoted(value: string): string {
-  if (/[\r\n]/.test(value)) throw new Error("an env value contains a line break");
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+// One call to the cluster's API. The agent may create, change, read and delete Deployments and
+// Services in the clients' namespace and nothing else (see k8s/agent.yaml).
+async function kube(method: string, path: string, yaml?: string): Promise<Response> {
+  const token = (await readFile(KUBE_TOKEN_FILE, "utf-8")).trim();
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (yaml) headers["Content-Type"] = "application/apply-patch+yaml";
+  return fetch(`${KUBE_API}${path}`, { method, headers, body: yaml, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
 }
 
-function envFileContent(id: string, port: number): string {
-  // a dry run leaves no secrets lying around in the temp folder
-  const secret = (value: string) => (DRY_RUN ? "<omitted in dry run>" : value);
-  const lines = [
-    `INSTANCE_ID=${id}`,
-    `PORT=${port}`,
-    `DATABASE_URL=${quoted(secret(INSTANCE_DATABASE_URL))}`,
-    `GEMINI_API_KEY=${quoted(secret(GEMINI_API_KEY))}`,
-  ];
-  if (INTERNAL_SECRET) lines.push(`INTERNAL_SECRET=${quoted(secret(INTERNAL_SECRET))}`);
-  return lines.join("\n") + "\n";
+async function failure(what: string, res: Response): Promise<Error> {
+  const body: any = await res.json().catch(() => null);
+  return new Error(`${what} failed: HTTP ${res.status}${body?.message ? ` ${body.message}` : ""}`);
 }
 
-// Written to a temporary name and renamed into place, so a crash halfway never leaves a half file
-// that systemd would then read on the next restart.
-export async function writeEnvFile(id: string, port: number): Promise<void> {
+// "Make it look like this": creates the object if it is missing, changes it if it differs, and does
+// nothing if it already matches. That is what makes every step here safe to repeat.
+async function apply(path: string, yaml: string): Promise<void> {
+  const res = await kube("PATCH", `${path}?fieldManager=rag-agent&force=true`, yaml);
+  if (!res.ok) throw await failure(`applying ${path.split("/").slice(-2).join("/")}`, res);
+}
+
+async function remove(path: string): Promise<void> {
+  const res = await kube("DELETE", path);
+  // already gone is not an error
+  if (!res.ok && res.status !== 404) throw await failure(`deleting ${path.split("/").slice(-2).join("/")}`, res);
+}
+
+// The image a service runs now, or null if it has no pod yet
+async function currentImage(id: string): Promise<string | null> {
+  const res = await kube("GET", deploymentPath(id));
+  if (res.status === 404) return null;
+  if (!res.ok) throw await failure(`reading rag-${id}`, res);
+  const deployment: any = await res.json();
+  return deployment?.spec?.template?.spec?.containers?.[0]?.image ?? null;
+}
+
+// Creates the service's pod and its name, or brings them in line with the template.
+export async function startService(id: string, image: string = RAG_IMAGE): Promise<void> {
   assertUuid(id);
-  await mkdir(ENV_DIR, { recursive: true });
-  const target = envPath(id);
-  await writeFile(`${target}.tmp`, envFileContent(id, port), { mode: 0o600 });
-  await rename(`${target}.tmp`, target);
-}
-
-// Brings an existing env file up to date with the agent's current settings.
-// Returns true if the file had to be rewritten (the service then needs a restart to pick it up).
-export async function syncEnvFile(id: string, port: number): Promise<boolean> {
-  assertUuid(id);
-  const current = await readFile(envPath(id), "utf-8").catch(() => null);
-  if (current === envFileContent(id, port)) return false;
-  await writeEnvFile(id, port);
-  return true;
-}
-
-export async function removeEnvFile(id: string): Promise<void> {
-  assertUuid(id);
-  await rm(envPath(id), { force: true });
-}
-
-// Runs the root-owned helper through sudo. execFile passes arguments as-is, with no shell involved.
-async function ctl(...args: string[]): Promise<void> {
   if (DRY_RUN) {
-    console.log(`  [dry run] rag-ctl ${args.join(" ")}`);
+    console.log(`  [dry run] apply rag-${id} with ${image}`);
     return;
   }
-  try {
-    await execFileAsync("sudo", ["-n", RAG_CTL, ...args], { timeout: 60000 });
-  } catch (err: any) {
-    const detail = String(err?.stderr || err?.message || err).trim();
-    throw new Error(`rag-ctl ${args[0]} failed: ${detail}`);
+  const template = await readFile(CLIENT_TEMPLATE, "utf-8");
+  // the id is a checked UUID and the image comes from this process's own settings, never from a request
+  const filled = template.replaceAll("__INSTANCE_ID__", id).replaceAll("__IMAGE__", image);
+  const [deployment, service, ...rest] = filled.split(/^---\s*$/m);
+  if (!deployment?.includes("kind: Deployment") || !service?.includes("kind: Service") || rest.length) {
+    throw new Error(`${CLIENT_TEMPLATE} must hold a Deployment and then a Service`);
   }
-}
-
-export async function startService(id: string): Promise<void> {
-  assertUuid(id);
-  await ctl("start", id);
+  await apply(deploymentPath(id), deployment);
+  await apply(servicePath(id), service);
 }
 
 export async function stopService(id: string): Promise<void> {
   assertUuid(id);
-  await ctl("stop", id);
-}
-
-// The nginx route is written by the root helper from its own template, so this process never
-// puts anything into nginx's config folder itself. Both calls test the config and reload nginx.
-export async function addRoute(id: string, port: number): Promise<void> {
-  assertUuid(id);
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`Refusing to route to port ${port}`);
-  await ctl("route", id, String(port));
-}
-
-export async function removeRoute(id: string): Promise<void> {
-  assertUuid(id);
-  await ctl("unroute", id);
-}
-
-export async function waitForHealth(port: number): Promise<void> {
   if (DRY_RUN) {
-    console.log(`  [dry run] skipping health check on port ${port}`);
+    console.log(`  [dry run] delete rag-${id}`);
     return;
   }
-  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) return;
-    } catch {
-      // not listening yet
-    }
-    await new Promise((r) => setTimeout(r, HEALTH_INTERVAL_MS));
+  await remove(deploymentPath(id));
+  await remove(servicePath(id));
+}
+
+// Waits until the pod of the service's current settings answers /health. Kubernetes asks /health itself
+// (the readiness check in the template) and reports the result on the Deployment.
+export async function waitForHealth(id: string): Promise<void> {
+  assertUuid(id);
+  if (DRY_RUN) {
+    console.log(`  [dry run] skipping health check of rag-${id}`);
+    return;
   }
-  throw new Error(`The service did not answer on /health within ${HEALTH_TIMEOUT_MS / 1000}s`);
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const res = await kube("GET", deploymentPath(id));
+    if (res.ok) {
+      const d: any = await res.json();
+      const status = d.status ?? {};
+      // "observedGeneration" catches the moment right after a change, when the numbers still describe the old pod
+      const seen = (status.observedGeneration ?? 0) >= (d.metadata?.generation ?? 0);
+      if (seen && status.updatedReplicas === 1 && status.availableReplicas === 1 && status.replicas === 1) return;
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  throw new Error(`The service did not answer on /health within ${READY_TIMEOUT_MS / 1000}s`);
+}
+
+// Brings one running service to this agent's image. If its new pod does not come up, the service is
+// put back on the image it ran before and the error is passed on, so a broken build stops at the
+// first service instead of taking all of them down.
+export async function updateService(id: string): Promise<void> {
+  assertUuid(id);
+  if (DRY_RUN) {
+    console.log(`  [dry run] update rag-${id}`);
+    return;
+  }
+  const before = await currentImage(id);
+  await startService(id);
+  try {
+    await waitForHealth(id);
+  } catch (err) {
+    // Not a new build's fault: the service was already on this image, or had no pod at all. One broken
+    // service must not keep the agent from looking after the others, so it is reported and left.
+    if (!before || before === RAG_IMAGE) {
+      console.error(`  rag-${id} is not answering: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+    console.error(`  rag-${id} did not come up on ${RAG_IMAGE}; putting it back on ${before}`);
+    await startService(id, before).catch((e) => console.error(`  could not put rag-${id} back: ${e.message}`));
+    throw err;
+  }
 }

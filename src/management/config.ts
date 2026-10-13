@@ -13,6 +13,12 @@ export const FIREBASE_PROJECT_ID = required("FIREBASE_PROJECT_ID");
 // Where clients reach their instance: <PUBLIC_BASE_URL>/i/<instanceId>
 export const PUBLIC_BASE_URL = required("PUBLIC_BASE_URL").replace(/\/+$/, "");
 
+// How the management API reaches a client's service, with {id} where the service id goes. In the
+// cluster: http://rag-{id}.rem-raas-clients.svc.cluster.local. Unset (development on your own
+// machine): the service's own port on this machine, from its record.
+export const INSTANCE_URL = process.env.INSTANCE_URL?.trim().replace(/\/+$/, "") || undefined;
+if (INSTANCE_URL && !INSTANCE_URL.includes("{id}")) throw new Error("INSTANCE_URL must contain {id}");
+
 // Optional: a dashboard origin allowed to call this API from the browser (e.g. http://localhost:5173)
 export const CORS_ORIGIN = process.env.CORS_ORIGIN?.trim() || undefined;
 

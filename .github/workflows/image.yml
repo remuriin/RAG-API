@@ -1,4 +1,4 @@
-# On a push to main: build the backend's container image.
+# On a push to main: check the backend and build its container image.
 # The VPS never builds anything.
 name: image
 
@@ -11,6 +11,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
+      - 'k8s/client.yaml'
       - 'Dockerfile'
       - '.dockerignore'
       - '.github/workflows/image.yml'
@@ -26,7 +27,23 @@ permissions:
 concurrency: image
 
 jobs:
+  # the checks that need no database, no model and no cluster
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsx scripts/check-agent.ts
+      - run: npx tsx scripts/check-history.ts
+      - run: npx tsx scripts/check-convert.ts
+      - run: npx tsx scripts/check-persona.ts
+
   build:
+    needs: check
     # an ARM machine, the same kind of CPU as the VPS, so nothing is emulated
     runs-on: ubuntu-24.04-arm
     steps:

@@ -21,6 +21,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# what one client's service looks like; the control agent fills it in for every service it sets up
+COPY k8s/client.yaml ./k8s/client.yaml
 # The image's own name, commit included. The control agent starts each client's service from the
 # image it runs itself, so all three pieces are always the same build.
 ARG GIT_SHA=main

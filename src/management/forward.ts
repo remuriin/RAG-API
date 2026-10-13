@@ -1,4 +1,5 @@
 import { signInternalToken } from "../auth/internal.js";
+import { INSTANCE_URL } from "./config.js";
 
 const TIMEOUT_MS = 300000; // an upload waits for chunking and embedding, same as the public route
 
@@ -10,10 +11,10 @@ export interface Forwarded {
 
 export class InstanceUnreachableError extends Error {}
 
-// Passes a request on to the instance's own process on this machine. The management API never
-// reads or writes an instance's files itself; the instance does the work, exactly as for API-key calls.
+// Passes a request on to the instance's own process. The management API never reads or writes an
+// instance's files itself; the instance does the work, exactly as for API-key calls.
 export async function forwardToInstance(
-  instance: { id: string; port: number },
+  instance: { id: string; port: number | null },
   method: string,
   path: string,
   options: { body?: string | Buffer; contentType?: string } = {}
@@ -23,9 +24,12 @@ export async function forwardToInstance(
   };
   if (options.contentType) headers["Content-Type"] = options.contentType;
 
+  // the id was checked to be a UUID before the record was loaded
+  const base = INSTANCE_URL ? INSTANCE_URL.replace("{id}", instance.id) : `http://127.0.0.1:${instance.port}`;
+
   let response: Response;
   try {
-    response = await fetch(`http://127.0.0.1:${instance.port}${path}`, {
+    response = await fetch(`${base}${path}`, {
       method,
       headers,
       // a Buffer is sent as its bytes; the cast is only for the type of its backing store

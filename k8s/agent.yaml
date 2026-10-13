@@ -1,0 +1,103 @@
+# The control agent: watches the instances table and creates or removes one pod per client service.
+# It has no address and no port; nothing ever connects to it.
+#
+# What it may do in the cluster is written here and is all it can do: create, read, change and delete
+# Deployments and Services in the rem-raas-clients namespace. It cannot read secrets, cannot touch
+# its own namespace, the web app or the portal, and has no way onto the VPS itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent
+  namespace: rem-raas-backend
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent
+  namespace: rem-raas-clients
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "patch", "delete"]
+---
+# gives that permission to the agent's account, which lives in the other namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent
+  namespace: rem-raas-clients
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent
+subjects:
+  - kind: ServiceAccount
+    name: agent
+    namespace: rem-raas-backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: rem-raas-backend
+spec:
+  replicas: 1
+  # The old agent is stopped before the new one starts: two agents at once would both set up the same service.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      serviceAccountName: agent
+      containers:
+        - name: agent
+          # ":main" is the newest build of the main branch. A deploy replaces it with one exact build,
+          # and the agent then brings every client's service to that same build, one at a time.
+          image: ghcr.io/remuriin/rag-api:main
+          imagePullPolicy: Always
+          command: ["node", "dist/src/agent/main.js"]
+          # the database address, from a secret created by hand on the VPS (see deploy/README.md)
+          envFrom:
+            - secretRef:
+                name: agent-env
+          env:
+            # the cluster's API shows a certificate signed by the cluster itself; this makes Node trust it
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - name: AGENT_READY_FILE
+              value: /tmp/agent-ready
+          # The agent writes this file once every client's service runs its build. Until then the pod
+          # is "not ready", so a deploy waits for the services too and goes back if one does not come up.
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/agent-ready"]
+            periodSeconds: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        # the only place the agent can write: one small file, gone with the pod
+        - name: tmp
+          emptyDir: {}
