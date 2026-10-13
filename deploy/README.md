@@ -1,6 +1,12 @@
 # Deploying to the VPS
 
-Every RAG instance runs the same code from `/opt/rag` as its own systemd service (`rag@<instanceId>`), with its own env file and its own nginx route. The management API and the web app share the same host. Public URLs:
+The backend runs in the VPS's Kubernetes cluster (k3s) as three kinds of pod, all started from one image built from this repository:
+
+- **Management API** (`management`): verifies Firebase logins, writes service requests, issues API keys, relays the dashboard's file and chat requests. Public at `/api/`.
+- **Control agent** (`agent`): no port. Polls the `instances` table and creates or removes one pod per client service.
+- **RAG service** (`rag-<instanceId>`): one pod per service a client created.
+
+Public URLs:
 
 ```
 https://rag.remservers.me/                    the web app (dashboard)
@@ -10,7 +16,20 @@ https://rag.remservers.me/i/<instanceId>/...  one client's service
 
 The older name `rag.140-245-60-8.sslip.io` still answers, on the same certificate.
 
-Commands below are run on the VPS unless stated otherwise. Needs: Ubuntu 22.04, Node **22 or newer** (20 is out of support since April 2026), Postgres with the `vector` extension, nginx, certbot.
+```
+cluster (k3s)
+└── node: rem-vm (the VPS)
+    ├── namespace rem-raas             the web app (from the RaaS repository)
+    ├── namespace rem-raas-backend
+    │   ├── pod: management            10.43.0.83, where nginx sends /api
+    │   └── pod: agent                 no address
+    └── namespace rem-raas-clients
+        └── pod: rag-<instanceId>      one per service, found by name
+```
+
+Outside the cluster, on the VPS itself: nginx (the only thing the internet talks to), Postgres, and the nightly database dump.
+
+Commands below are run on the VPS unless stated otherwise. Needs: Ubuntu 22.04, k3s (see the `Cluster` repository), Postgres with the `vector` extension, nginx, certbot. Node is not needed on the VPS: nothing is built or run there outside the cluster.
 
 ## One-time setup
 
@@ -22,78 +41,15 @@ sudo -u postgres psql -c "CREATE DATABASE rag_service OWNER rag_app;"
 sudo -u postgres psql -d rag_service -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
-Postgres must listen on localhost only (the default); the VPS firewall and the OCI security list expose only 22, 80 and 443.
-
-### 1. Code
+Postgres has to accept connections from the pods, which arrive from `10.42.0.0/16` and not from localhost. It listens on every address and takes any address with a password (`pg_hba.conf`), so the firewall is what keeps the internet out: ufw allows port 5432 only from the VPS's private network and from the pod network.
 
 ```bash
-which node          # if this is not /usr/bin/node, edit ExecStart in the three service files
-sudo useradd --system --home /opt/rag --shell /usr/sbin/nologin rag
-sudo git clone https://github.com/remuriin/RAG-API.git /opt/rag
-cd /opt/rag
-sudo npm ci
-sudo npm run build
+sudo ufw allow from 10.42.0.0/16 to any port 5432 proto tcp
 ```
 
-The code stays owned by root; the `rag` user only needs to read it. Do not put a `.env` file in `/opt/rag`.
+### 1. Settings files
 
-### 2. systemd template
-
-```bash
-sudo cp /opt/rag/deploy/rag@.service /etc/systemd/system/rag@.service
-sudo systemctl daemon-reload
-sudo mkdir -p /etc/rag && sudo chmod 700 /etc/rag
-```
-
-### 3. nginx site and HTTPS
-
-```bash
-sudo install -d -o root -g root -m 755 /etc/nginx/rag-instances
-sudo cp /opt/rag/deploy/nginx/headers.conf      /etc/nginx/snippets/rag-headers.conf
-sudo cp /opt/rag/deploy/nginx/api-location.conf /etc/nginx/snippets/rag-api.conf
-sudo cp /opt/rag/deploy/nginx/app-location.conf /etc/nginx/snippets/rag-app.conf
-sudo cp /opt/rag/deploy/nginx/errors.conf       /etc/nginx/snippets/rag-errors.conf
-sudo cp /opt/rag/deploy/nginx/instance.conf.example /etc/nginx/snippets/rag-instance.template
-sudo cp /opt/rag/deploy/nginx/rag.conf /etc/nginx/sites-available/rag.conf
-sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d rag.remservers.me
-```
-
-Certbot edits the installed site file in place (adds the `listen 443` block and the HTTP→HTTPS redirect), so after this step never copy `deploy/nginx/rag.conf` over it again; apply later changes to the site file by hand. The snippets can be copied over freely.
-
-## Control plane (management API + control agent)
-
-With these two running, services are created and deleted through the management API and nothing below "Adding an instance by hand" is needed any more.
-
-- **Management API** (`rag-management`): verifies Firebase logins, writes service requests, issues API keys, relays the dashboard's file and chat requests. Public at `/api/`.
-- **Control agent** (`rag-agent`): no port. Polls the `instances` table and does the env file / systemd / nginx work for `pending` and `deleting` rows, through `rag-ctl`.
-
-Run the schema migration first (`npm run db:migrate` from a machine with the repo's `.env` and a VPN or SSH tunnel to Postgres; it is safe to run again).
-
-### 1. Update the code
-
-```bash
-cd /opt/rag
-sudo git pull
-sudo npm ci
-sudo npm run build
-```
-
-### 2. Agent user and its permissions
-
-```bash
-sudo useradd --system --home /opt/rag --shell /usr/sbin/nologin ragagent
-sudo chown -R ragagent:ragagent /etc/rag
-sudo chmod 700 /etc/rag
-sudo install -o root -g root -m 755 /opt/rag/deploy/rag-ctl /usr/local/sbin/rag-ctl
-sudo install -o root -g root -m 440 /opt/rag/deploy/sudoers-rag-agent /etc/sudoers.d/rag-agent
-sudo visudo -cf /etc/sudoers.d/rag-agent
-```
-
-The agent owns `/etc/rag` (the instance env files) and nothing else. Its only root access is `sudo /usr/local/sbin/rag-ctl`, which accepts `start <uuid>`, `stop <uuid>`, `route <uuid> <port>` and `unroute <uuid>`. The nginx route files in `/etc/nginx/rag-instances` are written by `rag-ctl` as root, from the root-owned template, so the agent never puts anything into nginx's configuration itself.
-
-### 3. Env files
+Two files hold every secret. They stay on the VPS, root-only, and are never in this repository or in the image.
 
 ```bash
 sudo mkdir -p /etc/rag-control && sudo chmod 700 /etc/rag-control
@@ -105,36 +61,78 @@ sudo chmod 600 /etc/rag-control/management.env /etc/rag-control/agent.env
 `management.env` (all five are required):
 
 ```
-DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
+DATABASE_URL=postgres://rag_app:PASSWORD@VPS_ADDRESS:5432/rag_service
 FIREBASE_PROJECT_ID=rag-service-remuriin
 PUBLIC_BASE_URL=https://rag.remservers.me
 MGMT_PORT=4050
 INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 ```
 
-`agent.env` (the database URL, Gemini key and internal secret here are what the agent writes into each instance's env file):
+`agent.env` (what the agent and every client's service need):
 
 ```
-DATABASE_URL=postgres://rag_app:PASSWORD@localhost:5432/rag_service
+DATABASE_URL=postgres://rag_app:PASSWORD@VPS_ADDRESS:5432/rag_service
 GEMINI_API_KEY=YOUR_KEY
 INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 ```
 
-`INTERNAL_SECRET` is what lets the management API call an instance on the owner's behalf (the dashboard's file and chat pages). Generate one with `openssl rand -hex 32`. It must be identical in both files; if it isn't, the dashboard's file and chat pages answer "the service is not responding" and the management log says why.
+- `VPS_ADDRESS` is one of the VPS's own private addresses (`hostname -I`), never `localhost`: inside a pod, `localhost` is the pod.
+- No quotes around values. The secrets below are made from these files as written, and a quote would become part of the value. `sudo grep -c '="' <file>` must print `0`.
+- `INTERNAL_SECRET` is what lets the management API call a service on the owner's behalf (the dashboard's file and chat pages). Generate one with `openssl rand -hex 32`. It must be identical in both files; if it isn't, those pages answer "the service is not responding" and the management pod's log says why.
 
-**Changing a setting later.** Every time the agent starts, it compares each running instance's env file with its own current settings and, where they differ, rewrites the file and restarts that instance. So to change the Gemini key or the internal secret: edit `agent.env` (and `management.env` for the secret), then `sudo systemctl restart rag-agent rag-management`.
-
-### 4. Services
+### 2. Namespaces and secrets
 
 ```bash
-sudo cp /opt/rag/deploy/rag-management.service /opt/rag/deploy/rag-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now rag-management rag-agent
-systemctl status rag-management rag-agent --no-pager
-curl http://127.0.0.1:4050/api/health      # {"status":"ok","agent":"ok"} once the agent has polled
+sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/namespaces.yaml
+sudo kubectl -n rem-raas-clients create secret generic rag-env        --from-env-file=/etc/rag-control/agent.env
+sudo kubectl -n rem-raas-backend create secret generic management-env --from-env-file=/etc/rag-control/management.env
+sudo kubectl -n rem-raas-backend create secret generic agent-env      --from-env-file=/etc/rag-control/agent.env
 ```
 
-`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point an external pinger at `https://rag.remservers.me/api/health` so a dead agent is noticed.
+`rag-env` is shared by every client's service; which service a pod is, is set on the pod itself. `sudo kubectl -n <namespace> describe secret <name>` lists the names and sizes, never the values.
+
+**Changing a setting later.** A pod reads its settings once, when it starts. Edit the file, delete the secret and create it again, then restart what uses it:
+
+```bash
+sudo kubectl -n rem-raas-backend rollout restart deployment/management deployment/agent
+sudo kubectl -n rem-raas-clients rollout restart deployment -l app=rag
+```
+
+### 3. The management API and the agent
+
+```bash
+sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/management.yaml
+sudo kubectl -n rem-raas-backend rollout status deployment/management --timeout=120s
+curl -s http://10.43.0.83/api/health       # {"status":"ok","agent":"ok"} once the agent has polled
+
+sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/agent.yaml
+sudo kubectl -n rem-raas-backend rollout status deployment/agent --timeout=180s
+```
+
+The management pod brings the database schema up to date before it starts (its start command runs `dist/scripts/migrate.js` first), so there is no separate migration step.
+
+`agent.yaml` also holds what the agent may do in the cluster, and that is all it can do: create, read, change and delete Deployments and Services in `rem-raas-clients`. It cannot read secrets, cannot touch its own namespace, and has no access to the VPS.
+
+`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` otherwise, still with a 200). Point a monitor at `https://rag.remservers.me/api/health` that looks for `"agent":"ok"`, so a dead agent is noticed.
+
+### 4. nginx site and HTTPS
+
+```bash
+RAW=https://raw.githubusercontent.com/remuriin/RAG-API/main/deploy/nginx
+sudo curl -fsS -o /etc/nginx/snippets/rag-headers.conf   $RAW/headers.conf
+sudo curl -fsS -o /etc/nginx/snippets/rag-api.conf       $RAW/api-location.conf
+sudo curl -fsS -o /etc/nginx/snippets/rag-app.conf       $RAW/app-location.conf
+sudo curl -fsS -o /etc/nginx/snippets/rag-errors.conf    $RAW/errors.conf
+sudo curl -fsS -o /etc/nginx/snippets/rag-instances.conf $RAW/instances.conf
+sudo curl -fsS -o /etc/nginx/sites-available/rag.conf    $RAW/rag.conf
+sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d rag.remservers.me
+```
+
+Certbot edits the installed site file in place (adds the `listen 443` block and the HTTP→HTTPS redirect), so after this step never copy `rag.conf` over it again; apply later changes to the site file by hand. The snippets can be copied over freely.
+
+`rag-instances.conf` is one rule for every client's service. nginx finds the pod `rag-<instanceId>` by name, asking the cluster's own name lookup (`10.43.0.10`) per request, so nothing in nginx changes when a service is created or deleted. An address whose id has no service answers with the JSON 503 of `rag-errors.conf`; an id that is not a UUID answers 404.
 
 ### Using it
 
@@ -148,11 +146,43 @@ curl -X POST $API/instances/<id>/key -H "Authorization: Bearer $TOKEN"   # the A
 curl -X DELETE $API/instances/<id> -H "Authorization: Bearer $TOKEN"
 ```
 
-Logs: `journalctl -u rag-agent -f` and `journalctl -u rag-management -f`.
+## How a service is set up
+
+The agent does this by itself for every `pending` row; nothing here is done by hand.
+
+It fills in `k8s/client.yaml` (a copy is inside the image) with the service's id and with the agent's own image, and hands the result to Kubernetes: a Deployment and a Service, both named `rag-<instanceId>`. Then it waits until the pod answers `/health` and marks the row `active`. For a `deleting` row it deletes both and then the row.
+
+- The old pod of a service is stopped before a new one starts (`strategy: Recreate`). A service marks its unfinished uploads as failed when it starts, so two pods of one service alive at once would fail an upload the old one is still doing.
+- A pod being replaced gets 300 seconds to finish the requests it already has (a PDF upload can run for close to four minutes).
+- Each pod: 512 MB at most, not root, read-only files, no login for Kubernetes.
+
+To set one up by hand (the row and its API key must already exist):
+
+```bash
+curl -s https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/client.yaml \
+  | sed 's/__INSTANCE_ID__/<instanceId>/g; s#__IMAGE__#ghcr.io/remuriin/rag-api:main#' \
+  | sudo kubectl apply -f -
+```
+
+## Updating the code
+
+A push to `main` runs `.github/workflows/image.yml`: the check scripts that need no database, model or cluster, then the image is built on an ARM machine and stored as `ghcr.io/remuriin/rag-api`, tagged `main` and with the commit.
+
+To make the cluster run the newest build:
+
+```bash
+sudo kubectl -n rem-raas-backend rollout restart deployment/management
+sudo kubectl -n rem-raas-backend rollout restart deployment/agent
+sudo kubectl -n rem-raas-backend rollout status deployment/agent --timeout=180s
+```
+
+The management pod migrates the database and starts. The agent, when it starts, brings every client's service to its own build, one at a time, waiting for each to answer before the next. If one does not come up on the new build, the agent puts that service back on the build it ran before and stops without reporting ready, so the `rollout status` above fails; `sudo kubectl -n rem-raas-backend rollout undo deployment/agent` then brings the previous agent back, which returns the services already moved.
+
+A change to a file in `k8s/` is applied with `sudo kubectl apply -f <its raw address>`. A change to `k8s/client.yaml` reaches the services with the next build, since the agent reads its copy from the image. A changed nginx snippet is copied again (`curl` line above), then `sudo nginx -t && sudo systemctl reload nginx`.
 
 ## The web app
 
-The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs as one pod in the VPS's Kubernetes cluster (k3s), in the namespace `rem-raas`. nginx forwards `/` to that pod's service at the fixed inside-only address `10.43.0.80`. The cluster files are in `RaaS/k8s/`.
+The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs as one pod in the namespace `rem-raas`. nginx forwards `/` to that pod's service at the fixed inside-only address `10.43.0.80`. The cluster files are in `RaaS/k8s/`.
 
 A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image, stores it as `ghcr.io/remuriin/raas-web` (tagged `main` and with the commit), and makes the cluster run it. How that works, and the script on the VPS that does it, is in the `Cluster` repository. By hand, on the VPS:
 
@@ -165,7 +195,7 @@ The old pod keeps serving until the new one answers its health check, so there i
 
 The container sets the caching (`index.html` never cached, `/assets/` cached for a year). The snippet `rag-app.conf` adds the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
 
-If the pod or the cluster is down, `/` answers 502 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
+If the web app's pod is down, `/` answers 502 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
 
 Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
 
@@ -174,87 +204,36 @@ Before the first deploy, in the Firebase console, `rag.remservers.me` must be on
 A service takes `.md`, `.txt`, `.pdf`, `.html` and `.xml` files. Markdown and plain text are stored as they are. A PDF, a web page and XML are first written out as markdown by a Gemini model, and only that markdown is kept.
 
 - Limits: 10 MB for a PDF, 500 KB for the others. nginx allows 11 MB (`client_max_body_size` in the site file), the service applies the real limit per kind.
-- Models: `gemini-3.8-flash` first, `gemini-3.5-flash-lite` when the first is busy or does not start replying within 25 seconds. Both differ from the model that answers questions, so converting never uses the answers' quota. The two names are the defaults in `src/ingest/convert.ts`. A service also reads `GEMINI_CONVERT_MODEL` and `GEMINI_CONVERT_FALLBACK_MODEL` from its environment, but the agent does not write those into a service's env file, so today a change means changing the defaults, building and restarting the services.
+- Models: `gemini-3.8-flash` first, `gemini-3.5-flash-lite` when the first is busy or does not start replying within 25 seconds. Both differ from the model that answers questions, so converting never uses the answers' quota. The two names are the defaults in `src/ingest/convert.ts`. A service also reads `GEMINI_CONVERT_MODEL` and `GEMINI_CONVERT_FALLBACK_MODEL` from its environment; to set them for every service, add them to `agent.env` and recreate the `rag-env` secret.
 - Time: a conversion gets 230 seconds, because the whole upload has to finish inside the 5 minutes nginx and the relay wait. A file that needs longer is refused whole. In practice that is about 60 dense pages.
 - `npx tsx scripts/check-convert.ts` checks the rules with a pretend model.
-
-## Adding an instance by hand
-
-Only needed without the control plane. The instance must already exist in the `instances` table with an API key; create it from a machine that has the repo and database access:
-
-```bash
-npm run dev:create-instance -- "<instance name>" ["<product name>"]
-```
-
-It prints the `INSTANCE_ID`, the `PORT`, and the API key (shown once).
-
-Then, on the VPS, with `ID` and `PORT` set to those values:
-
-```bash
-ID=<instanceId>
-PORT=<port>
-
-# 1. env file (root-only; it holds the database password and the Gemini key)
-sudo tee /etc/rag/$ID.env > /dev/null <<EOF
-INSTANCE_ID=$ID
-PORT=$PORT
-DATABASE_URL="postgres://rag_app:PASSWORD@localhost:5432/rag_service"
-GEMINI_API_KEY="YOUR_KEY"
-EOF
-sudo chmod 600 /etc/rag/$ID.env
-sudo nano /etc/rag/$ID.env      # fill in PASSWORD (URL-encoded, e.g. # as %23) and the Gemini key
-
-# 2. service and route
-sudo rag-ctl start $ID
-curl http://127.0.0.1:$PORT/health
-sudo rag-ctl route $ID $PORT
-
-# 3. from anywhere
-curl https://rag.remservers.me/i/$ID/health
-```
-
-## Removing an instance
-
-```bash
-sudo rag-ctl stop $ID
-sudo rag-ctl unroute $ID
-sudo rm /etc/rag/$ID.env
-```
-
-Then delete its row from `instances`; its keys, documents and chunks are removed with it.
-
-## Updating the code
-
-All instances share one checkout, so they are updated together:
-
-```bash
-cd /opt/rag
-sudo git pull
-sudo npm ci
-sudo npm run build
-sudo systemctl restart 'rag@*' rag-management rag-agent
-```
-
-If the update changes the database schema, run `npm run db:migrate` (from a machine with the repo's `.env`) before restarting. If it changes a file under `deploy/`, copy that file to its place again (service files need `sudo systemctl daemon-reload`; nginx snippets need `sudo nginx -t && sudo systemctl reload nginx`; `rag-ctl` needs the `install` line from step 2).
 
 ## Logs and status
 
 ```bash
-systemctl list-units 'rag@*'
-journalctl -u rag@$ID -f
-journalctl -t rag-backup           # the nightly backup's failures, if any
+sudo kubectl -n rem-raas-clients get pods                         # one line per client service
+sudo kubectl -n rem-raas-backend get pods                         # the management API and the agent
+sudo kubectl -n rem-raas-backend logs deployment/agent -f         # what the agent set up or removed
+sudo kubectl -n rem-raas-backend logs deployment/management -f
+sudo kubectl -n rem-raas-clients logs deployment/rag-<instanceId> -f
+sudo kubectl -n rem-raas-clients describe pod -l instance=<instanceId>   # why a service's pod is not starting
+sudo kubectl -n rem-raas-clients top pod                          # memory and CPU per service
+journalctl -t rag-backup                                          # the nightly backup's failures, if any
 ```
 
-A unit that fails to start 5 times within 10 minutes is left stopped (so a broken instance doesn't restart every 5 seconds forever). `rag-ctl start` clears that state; by hand it is `sudo systemctl reset-failed rag@$ID`.
+A replaced pod's log goes with the pod. A pod that keeps crashing is restarted by Kubernetes with growing pauses; `describe pod` shows the reason.
+
+Limits worth knowing: Kubernetes allows 110 pods on the node, so about 100 services. Each one uses about 27 MB of memory when idle.
 
 ## Database backups
 
-A daily dump of the `rag_service` database, kept for 7 days in `/var/backups/rag`.
+A daily dump of the `rag_service` database, kept for 7 days in `/var/backups/rag`. It runs on the VPS itself, outside the cluster.
 
 ```bash
-sudo install -o root -g root -m 755 /opt/rag/deploy/rag-backup /usr/local/sbin/rag-backup
+RAW=https://raw.githubusercontent.com/remuriin/RAG-API/main/deploy
+sudo curl -fsS -o /usr/local/sbin/rag-backup $RAW/rag-backup && sudo chmod 755 /usr/local/sbin/rag-backup
 sudo install -d -o postgres -g postgres -m 700 /var/backups/rag
-sudo install -o root -g root -m 644 /opt/rag/deploy/rag-backup.cron /etc/cron.d/rag-backup
+sudo curl -fsS -o /etc/cron.d/rag-backup $RAW/rag-backup.cron && sudo chmod 644 /etc/cron.d/rag-backup
 sudo -u postgres /usr/local/sbin/rag-backup      # run it once now
 sudo ls -lh /var/backups/rag
 ```
@@ -263,11 +242,18 @@ It runs at 18:15 UTC (2:15 AM in the Philippines). A failed run is written to th
 
 The dumps are on the same disk as the database, so they cover mistakes and bad deploys but not the loss of the VPS. For that, copy them off the machine: for example a second cron line that runs `rclone copy /var/backups/rag remote:rag-backups` to OCI Object Storage (free tier) after the dump.
 
-Restore. The services must be stopped first: a restore drops and recreates the tables, which waits forever on connections that are still open, and the agent could provision in between.
+Restore. Everything that uses the database must be stopped first: a restore drops and recreates the tables, which waits forever on connections that are still open, and the agent could set a service up in between.
 
 ```bash
-sudo systemctl stop 'rag@*' rag-management rag-agent
+sudo kubectl -n rem-raas-backend scale deployment/agent deployment/management --replicas=0
+sudo kubectl -n rem-raas-clients scale deployment -l app=rag --replicas=0
 sudo -u postgres pg_restore --clean --if-exists --single-transaction -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
-sudo systemctl start rag-management rag-agent
-sudo systemctl start 'rag@*'
+sudo kubectl -n rem-raas-backend scale deployment/management deployment/agent --replicas=1
+sudo kubectl -n rem-raas-clients scale deployment -l app=rag --replicas=1
 ```
+
+A service that exists in the restored database but has no pod gets one when the agent starts. A pod whose service is not in the restored database is left over: delete it with `sudo kubectl -n rem-raas-clients delete deployment,service rag-<instanceId>`.
+
+## Before the cluster
+
+Until 2026-10-13 the backend ran on systemd from a checkout in `/opt/rag`: `rag-management`, `rag-agent`, and one `rag@<instanceId>` unit per service with its own port, env file (`/etc/rag`) and nginx route file (`/etc/nginx/rag-instances`), all driven by the root-owned helper `rag-ctl`. Those files are still in this folder (`rag@.service`, `rag-agent.service`, `rag-management.service`, `rag-ctl`, `sudoers-rag-agent`, `nginx/instance.conf.example`) and still on the VPS, disabled, as the way back. They are removed once the cluster set-up has run for a while. The code in this repository no longer works with them: the agent talks to Kubernetes only.
