@@ -166,17 +166,23 @@ curl -s https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/client.yaml 
 
 ## Updating the code
 
-A push to `main` runs `.github/workflows/image.yml`: the check scripts that need no database, model or cluster, then the image is built on an ARM machine and stored as `ghcr.io/remuriin/rag-api`, tagged `main` and with the commit.
+A push to `main` that touches the code runs `.github/workflows/image.yml`, and that is the deploy:
 
-To make the cluster run the newest build:
+1. **check**: the check scripts that need no database, model or cluster.
+2. **build**: the image is built on an ARM machine and stored as `ghcr.io/remuriin/rag-api`, tagged `main` and with the commit.
+3. **deploy**: the cluster is told to run that commit, the management API first, then the agent. It logs in to the VPS as the `deploy` user with this repository's key (the `DEPLOY_KEY` secret), which can do one thing: ask `k8s-deploy` to change an image in `rem-raas-backend`. The key is made once with `sudo /opt/cluster/k8s-add-project rem-raas-backend`; see the `Cluster` repository.
+
+The management pod migrates the database and starts. The agent, when it starts, brings every client's service to its own build, one at a time, waiting for each to answer before the next. It only reports ready once all of them run it.
+
+If a service does not come up on the new build, the agent puts that service back on the build it ran before and stops without reporting ready. `k8s-deploy` then gives up after two minutes, brings the previous agent back (which returns the services already moved), and the run turns red. The management API stays on the new build in that case; a build whose management API does not start never gets as far as the agent.
+
+By hand, on the VPS:
 
 ```bash
-sudo kubectl -n rem-raas-backend rollout restart deployment/management
-sudo kubectl -n rem-raas-backend rollout restart deployment/agent
-sudo kubectl -n rem-raas-backend rollout status deployment/agent --timeout=180s
+sudo kubectl -n rem-raas-backend rollout undo deployment/agent          # back to the previous build, services included
+sudo kubectl -n rem-raas-backend rollout undo deployment/management
+sudo kubectl -n rem-raas-backend rollout restart deployment/agent       # start the agent again, same build
 ```
-
-The management pod migrates the database and starts. The agent, when it starts, brings every client's service to its own build, one at a time, waiting for each to answer before the next. If one does not come up on the new build, the agent puts that service back on the build it ran before and stops without reporting ready, so the `rollout status` above fails; `sudo kubectl -n rem-raas-backend rollout undo deployment/agent` then brings the previous agent back, which returns the services already moved.
 
 A change to a file in `k8s/` is applied with `sudo kubectl apply -f <its raw address>`. A change to `k8s/client.yaml` reaches the services with the next build, since the agent reads its copy from the image. A changed nginx snippet is copied again (`curl` line above), then `sudo nginx -t && sudo systemctl reload nginx`.
 
