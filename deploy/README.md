@@ -113,7 +113,7 @@ The management pod brings the database schema up to date before it starts (its s
 
 `agent.yaml` also holds what the agent may do in the cluster, and that is all it can do: create, read, change and delete Deployments and Services in `rem-raas-clients`. It cannot read secrets, cannot touch its own namespace, and has no access to the VPS.
 
-`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point a monitor at `https://rag.remservers.me/api/health`, so a dead agent is noticed.
+`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point a monitor at `https://rag.remservers.me/api/health`, so a dead agent is noticed. The cluster's own readiness check uses `/api/ready` instead, which asks the database only: a dead agent must not take the dashboard's API down with it.
 
 ### 4. nginx site and HTTPS
 

@@ -139,6 +139,20 @@ export function createManagementApp() {
     })
   );
 
+  // For the cluster's readiness check: only the database. A silent agent must not take this API out of service.
+  app.get(
+    "/api/ready",
+    wrap(async (_req, res) => {
+      try {
+        await pool.query("SELECT 1");
+      } catch {
+        res.status(503).json({ status: "unavailable" });
+        return;
+      }
+      res.json({ status: "ok" });
+    })
+  );
+
   const api = express.Router();
   api.use(requireUser);
   // as large as an instance accepts: the chat test relays a question with its conversation

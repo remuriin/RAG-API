@@ -44,10 +44,11 @@ spec:
             # how a client's service is reached: by the name the control agent gave it
             - name: INSTANCE_URL
               value: "http://rag-{id}.rem-raas-clients.svc.cluster.local"
-          # /api/health also asks the database, so an answer means the database is reachable
+          # /api/ready asks the database only. /api/health also answers 503 for a silent agent,
+          # which as a readiness check would take the whole API out of service with it.
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/ready
               port: 4050
             periodSeconds: 5
           resources:
