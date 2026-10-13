@@ -1,0 +1,93 @@
+# What one client service looks like in the cluster: "keep one pod of the backend's image running as
+# this service", and a name the pod is found by. The control agent creates exactly this for every
+# service; this file is the same thing written out, for reading and for setting one up by hand:
+#
+#   sed 's/__INSTANCE_ID__/<the service id>/g' k8s/client.example.yaml | sudo kubectl apply -f -
+#
+# Only __INSTANCE_ID__ is ever substituted.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-__INSTANCE_ID__
+  namespace: rem-raas-clients
+  labels:
+    app: rag
+spec:
+  replicas: 1
+  # The old pod is stopped before the new one starts. A service marks its unfinished uploads as failed
+  # when it starts, so two pods of one service alive at once would fail an upload the old one is doing.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      instance: "__INSTANCE_ID__"
+  template:
+    metadata:
+      labels:
+        app: rag
+        instance: "__INSTANCE_ID__"
+    spec:
+      # a PDF upload can run for close to four minutes; a pod being replaced gets this long to finish it
+      terminationGracePeriodSeconds: 300
+      # the service never talks to Kubernetes, so it gets no login for it
+      automountServiceAccountToken: false
+      # without this every pod is handed a variable for every other service in the namespace
+      enableServiceLinks: false
+      containers:
+        - name: rag
+          image: ghcr.io/remuriin/rag-api:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          # the database address, the Gemini key and the internal secret: the same for every service,
+          # from a secret created by hand on the VPS (see deploy/README.md). Never in this repository.
+          envFrom:
+            - secretRef:
+                name: rag-env
+          env:
+            # which service this pod is: every query it runs is limited to this id
+            - name: INSTANCE_ID
+              value: "__INSTANCE_ID__"
+            - name: PORT
+              value: "3000"
+            # inside a pod "127.0.0.1" would be reachable by nobody
+            - name: HOST
+              value: "0.0.0.0"
+          # /health also asks the database, so an answer means the database is reachable
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 500m
+              # one service embedding a large file must not take the whole VPS with it
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+# The name the pod is found by: rag-<id>.rem-raas-clients.svc.cluster.local
+# The address behind it is picked by the cluster; nginx and the management API use the name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-__INSTANCE_ID__
+  namespace: rem-raas-clients
+  labels:
+    app: rag
+spec:
+  type: ClusterIP
+  selector:
+    instance: "__INSTANCE_ID__"
+  ports:
+    - port: 80
+      targetPort: 3000
