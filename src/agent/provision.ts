@@ -24,15 +24,25 @@ export async function heartbeat(): Promise<void> {
   );
 }
 
+// Keeps the heartbeat moving while the agent waits for a pod (up to a minute at a time). Without it,
+// /api/health would call a busy agent "stale" for a few seconds, which is what a monitor alerts on.
+async function whileAlive<T>(work: () => Promise<T>): Promise<T> {
+  const beat = setInterval(() => heartbeat().catch(() => {}), 15000);
+  try {
+    return await work();
+  } finally {
+    clearInterval(beat);
+  }
+}
+
 // Run once when the agent starts: every running service is brought to this agent's image, one at a
 // time. After a deploy that is what updates the services; on any other start it changes nothing.
 // It stops at the first service that does not come up (that one is put back on its old image).
 export async function syncActiveInstances(): Promise<void> {
   const result = await pool.query("SELECT id FROM instances WHERE status = 'active' ORDER BY created_at");
   for (const { id } of result.rows) {
-    // a long round must not make the agent look dead
     await heartbeat();
-    await updateService(id);
+    await whileAlive(() => updateService(id));
   }
 }
 
@@ -40,7 +50,7 @@ export async function syncActiveInstances(): Promise<void> {
 export async function provision(work: PendingWork): Promise<void> {
   try {
     await startService(work.id);
-    await waitForHealth(work.id);
+    await whileAlive(() => waitForHealth(work.id));
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`  provisioning ${work.id} failed: ${reason}`);

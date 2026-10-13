@@ -113,7 +113,7 @@ The management pod brings the database schema up to date before it starts (its s
 
 `agent.yaml` also holds what the agent may do in the cluster, and that is all it can do: create, read, change and delete Deployments and Services in `rem-raas-clients`. It cannot read secrets, cannot touch its own namespace, and has no access to the VPS.
 
-`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` otherwise, still with a 200). Point a monitor at `https://rag.remservers.me/api/health` that looks for `"agent":"ok"`, so a dead agent is noticed.
+`/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point a monitor at `https://rag.remservers.me/api/health`, so a dead agent is noticed.
 
 ### 4. nginx site and HTTPS
 
@@ -262,4 +262,4 @@ A service that exists in the restored database but has no pod gets one when the 
 
 ## Before the cluster
 
-Until 2026-10-13 the backend ran on systemd from a checkout in `/opt/rag`: `rag-management`, `rag-agent`, and one `rag@<instanceId>` unit per service with its own port, env file (`/etc/rag`) and nginx route file (`/etc/nginx/rag-instances`), all driven by the root-owned helper `rag-ctl`. Those files are still in this folder (`rag@.service`, `rag-agent.service`, `rag-management.service`, `rag-ctl`, `sudoers-rag-agent`, `nginx/instance.conf.example`) and still on the VPS, disabled, as the way back. They are removed once the cluster set-up has run for a while. The code in this repository no longer works with them: the agent talks to Kubernetes only.
+Until 2026-10-13 the backend ran on systemd from a checkout in `/opt/rag`: `rag-management`, `rag-agent`, and one `rag@<instanceId>` unit per service with its own port, env file (`/etc/rag`) and nginx route file (`/etc/nginx/rag-instances`), all driven by a root-owned helper, `rag-ctl`. None of that exists any more, on the VPS or in this repository; the git history before that date has the files.
