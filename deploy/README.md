@@ -19,9 +19,12 @@ The older name `rag.140-245-60-8.sslip.io` still answers, on the same certificat
 ```
 cluster (k3s)
 └── node: rem-vm (the VPS)
+    ├── namespace flux-system          Flux: applies the Fleet repository, deploys new builds
+    ├── namespace flagger-system       Flagger: blue-green for the web app and the management API
     ├── namespace rem-raas             the web app (from the RaaS repository)
     ├── namespace rem-raas-backend
-    │   ├── pod: management            10.43.0.83, where nginx sends /api
+    │   ├── pod: management-primary    what users get, Service "management", where nginx sends /api
+    │   ├── pod: management            a new build being checked, only during a deploy
     │   └── pod: agent                 no address
     └── namespace rem-raas-clients
         └── pod: rag-<instanceId>      one per service, found by name
@@ -82,8 +85,9 @@ INTERNAL_SECRET=THE_SAME_RANDOM_VALUE_IN_BOTH_FILES
 
 ### 2. Namespaces and secrets
 
+The namespaces, the management API, the agent and its permissions are in the private `Fleet` repository (`apps/rag-api/`, `apps/rag-api-agent/`), and Flux, in the cluster, applies them. Nothing here is applied by hand. The secrets are the exception: they are made by hand and are in no repository.
+
 ```bash
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/namespaces.yaml
 sudo kubectl -n rem-raas-clients create secret generic rag-env        --from-env-file=/etc/rag-control/agent.env
 sudo kubectl -n rem-raas-backend create secret generic management-env --from-env-file=/etc/rag-control/management.env
 sudo kubectl -n rem-raas-backend create secret generic agent-env      --from-env-file=/etc/rag-control/agent.env
@@ -94,24 +98,23 @@ sudo kubectl -n rem-raas-backend create secret generic agent-env      --from-env
 **Changing a setting later.** A pod reads its settings once, when it starts. Edit the file, delete the secret and create it again, then restart what uses it:
 
 ```bash
-sudo kubectl -n rem-raas-backend rollout restart deployment/management deployment/agent
+sudo kubectl -n rem-raas-backend rollout restart deployment/management-primary deployment/agent
 sudo kubectl -n rem-raas-clients rollout restart deployment -l app=rag
 ```
 
 ### 3. The management API and the agent
 
-```bash
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/management.yaml
-sudo kubectl -n rem-raas-backend rollout status deployment/management --timeout=120s
-curl -s http://10.43.0.83/api/health       # {"status":"ok","agent":"ok"} once the agent has polled
+Flux runs them from Fleet: first the management API (`rag-api`), then the agent (`rag-api-agent`, which waits for it). Their state, on the VPS:
 
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/agent.yaml
-sudo kubectl -n rem-raas-backend rollout status deployment/agent --timeout=180s
+```bash
+sudo flux get kustomizations rag-api rag-api-agent --kubeconfig=/etc/rancher/k3s/k3s.yaml
+sudo kubectl -n rem-raas-backend get canary,deploy,pods
+curl -s http://management.rem-raas-backend.svc.cluster.local/api/health    # only works from a pod; from the VPS use https://rag.remservers.me/api/health
 ```
 
-The management pod brings the database schema up to date before it starts (its start command runs `dist/scripts/migrate.js` first), so there is no separate migration step.
+The management API is deployed blue-green by Flagger: users reach `management-primary` through the Service `management`, and a new build starts as `management` beside it, is checked, and only then copied over. The management pod brings the database schema up to date before it starts (its start command runs `dist/scripts/migrate.js` first), so there is no separate migration step. Because the new pod migrates while the old one still serves, a migration must keep working for the build before it (add first, remove in a later deploy).
 
-`agent.yaml` also holds what the agent may do in the cluster, and that is all it can do: create, read, change and delete Deployments and Services in `rem-raas-clients`. It cannot read secrets, cannot touch its own namespace, and has no access to the VPS.
+The agent's permissions (`apps/rag-api/agent-rbac.yaml` in Fleet), and that is all it can do: create, read, change and delete Deployments and Services in `rem-raas-clients`. It cannot read secrets, cannot touch its own namespace, and has no access to the VPS.
 
 `/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point a monitor at `https://rag.remservers.me/api/health`, so a dead agent is noticed. The cluster's own readiness check uses `/api/ready` instead, which asks the database only: a dead agent must not take the dashboard's API down with it.
 
@@ -166,38 +169,24 @@ curl -s https://raw.githubusercontent.com/remuriin/RAG-API/main/k8s/client.yaml 
 
 ## Updating the code
 
-A push to `main` that touches the code runs `.github/workflows/image.yml`, and that is the deploy:
+A push to `main` that touches the code runs `.github/workflows/image.yml`:
 
 1. **check**: the check scripts that need no database, model or cluster.
-2. **build**: the image is built on an ARM machine and stored as `ghcr.io/remuriin/rag-api`, tagged `main` and with the commit.
-3. **deploy**: the cluster is told to run that commit, the management API first, then the agent. It logs in to the VPS as the `deploy` user with this repository's key (the `DEPLOY_KEY` secret), which can do one thing: ask `k8s-deploy` to change an image in `rem-raas-backend`. The key is made once with `sudo /opt/cluster/k8s-add-project rem-raas-backend`; see the `Cluster` repository.
+2. **build**: the image is built on an ARM machine and stored as `ghcr.io/remuriin/rag-api`, tagged with the commit, `main`, and `main-<commit>-<commit time>`.
 
-The management pod migrates the database and starts. The agent, when it starts, brings every client's service to its own build, one at a time, waiting for each to answer before the next. It only reports ready once all of them run it.
+Nothing in the workflow touches the VPS. GitHub then calls Flux's webhook; Flux finds the new `main-...` tag, its bot writes it into `apps/rag-api/management.yaml` and `apps/rag-api-agent/agent.yaml` in Fleet (one commit), and Flux rolls it out: the management API first (blue-green, through Flagger's checks), then the agent.
 
-If a service does not come up on the new build, the agent puts that service back on the build it ran before and stops without reporting ready. `k8s-deploy` then gives up after two minutes, brings the previous agent back (which returns the services already moved), and the run turns red. The management API stays on the new build in that case; a build whose management API does not start never gets as far as the agent.
+The agent, when it starts, brings every client's service to its own build, one at a time, waiting for each to answer before the next. It only reports ready once all of them run it. If a service does not come up on the new build, the agent puts that service back on the build it ran before and stops without reporting ready.
 
-By hand, on the VPS:
+Going back: in Fleet, take the `# {"$imagepolicy": ...}` marker off the image lines and set the old tag by hand, commit and push; the bot then leaves those lines alone. Put the markers back to follow `main` again. A management build that fails Flagger's checks never reaches users: Flagger throws it away by itself. A broken agent build has no automatic way back: pin the old tag.
 
-```bash
-sudo kubectl -n rem-raas-backend rollout undo deployment/agent          # back to the previous build, services included
-sudo kubectl -n rem-raas-backend rollout undo deployment/management
-sudo kubectl -n rem-raas-backend rollout restart deployment/agent       # start the agent again, same build
-```
-
-A change to a file in `k8s/` is applied with `sudo kubectl apply -f <its raw address>`. A change to `k8s/client.yaml` reaches the services with the next build, since the agent reads its copy from the image. A changed nginx snippet is copied again (`curl` line above), then `sudo nginx -t && sudo systemctl reload nginx`.
+A change to the cluster files is a commit to Fleet. A change to `k8s/client.yaml` (the template the agent fills in for each service, the only cluster file still in this repository) reaches the services with the next build, since the agent reads its copy from the image. A changed nginx snippet is copied again (`curl` line above), then `sudo nginx -t && sudo systemctl reload nginx`.
 
 ## The web app
 
-The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs as one pod in the namespace `rem-raas`. nginx forwards `/` to that pod's service at the fixed inside-only address `10.43.0.80`. The cluster files are in `RaaS/k8s/`.
+The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs in the namespace `rem-raas`. nginx forwards `/` to its Service by name, `web.rem-raas.svc.cluster.local`. Its cluster files are in Fleet (`apps/raas/`).
 
-A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image, stores it as `ghcr.io/remuriin/raas-web` (tagged `main` and with the commit), and makes the cluster run it. How that works, and the script on the VPS that does it, is in the `Cluster` repository. By hand, on the VPS:
-
-```bash
-sudo kubectl -n rem-raas rollout undo deployment/web        # back to the previous image
-sudo kubectl -n rem-raas rollout history deployment/web     # what it has run
-```
-
-The old pod keeps serving until the new one answers its health check, so there is no gap. No nginx reload is needed.
+A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image and stores it as `ghcr.io/remuriin/raas-web`. Flux deploys it the same way as the backend, blue-green through Flagger: the new version is checked beside the old one and only then switched to, and a version that fails its checks is thrown away by itself. No nginx reload is needed.
 
 The container sets the caching (`index.html` never cached, `/assets/` cached for a year). The snippet `rag-app.conf` adds the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
 
@@ -250,12 +239,16 @@ The dumps are on the same disk as the database, so they cover mistakes and bad d
 
 Restore. Everything that uses the database must be stopped first: a restore drops and recreates the tables, which waits forever on connections that are still open, and the agent could set a service up in between.
 
+Flux would put the backend back while it is stopped, so it is paused first and resumed after:
+
 ```bash
-sudo kubectl -n rem-raas-backend scale deployment/agent deployment/management --replicas=0
+sudo flux suspend kustomization rag-api rag-api-agent --kubeconfig=/etc/rancher/k3s/k3s.yaml
+sudo kubectl -n rem-raas-backend scale deployment/agent deployment/management-primary --replicas=0
 sudo kubectl -n rem-raas-clients scale deployment -l app=rag --replicas=0
 sudo -u postgres pg_restore --clean --if-exists --single-transaction -d rag_service /var/backups/rag/rag_service-YYYY-MM-DD.dump
-sudo kubectl -n rem-raas-backend scale deployment/management deployment/agent --replicas=1
+sudo kubectl -n rem-raas-backend scale deployment/management-primary deployment/agent --replicas=1
 sudo kubectl -n rem-raas-clients scale deployment -l app=rag --replicas=1
+sudo flux resume kustomization rag-api rag-api-agent --kubeconfig=/etc/rancher/k3s/k3s.yaml
 ```
 
 A service that exists in the restored database but has no pod gets one when the agent starts. A pod whose service is not in the restored database is left over: delete it with `sudo kubectl -n rem-raas-clients delete deployment,service rag-<instanceId>`.

@@ -22,7 +22,7 @@ const deploymentPath = (id: string) => `/apis/apps/v1/namespaces/${CLIENTS_NAMES
 const servicePath = (id: string) => `/api/v1/namespaces/${CLIENTS_NAMESPACE}/services/rag-${id}`;
 
 // One call to the cluster's API. The agent may create, change, read and delete Deployments and
-// Services in the clients' namespace and nothing else (see k8s/agent.yaml).
+// Services in the clients' namespace and nothing else (see apps/rag-api/agent-rbac.yaml in the Fleet repo).
 async function kube(method: string, path: string, yaml?: string): Promise<Response> {
   const token = (await readFile(KUBE_TOKEN_FILE, "utf-8")).trim();
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
