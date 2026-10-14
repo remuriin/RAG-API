@@ -1,5 +1,7 @@
-# On a push to main: check the backend, build its container image, and make the cluster run it.
-# The VPS never builds anything.
+# On a push to main: check the backend, build its container image and push it to ghcr.io.
+# Flux, in the cluster, sees the new main-<commit>-<commit time> tag and deploys it (repo Fleet):
+# the management API first, then the control agent, which moves every client's service to its build.
+# The VPS never builds anything, and nothing here logs in to it.
 name: image
 
 on:
@@ -49,6 +51,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # the commit's own time, for the tag Flux sorts by: re-running an old run never sorts above a newer build
+      - name: commit time
+        id: ts
+        run: echo "ts=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -63,37 +70,14 @@ jobs:
           context: .
           platforms: linux/arm64
           push: true
-          # one tag that names this exact commit, and "main" that always points at the newest
+          # one tag that names this exact commit, "main" that always points at the newest,
+          # and main-<commit>-<commit time>, the one Flux picks the newest build by
           tags: |
             ghcr.io/remuriin/rag-api:${{ github.sha }}
             ghcr.io/remuriin/rag-api:main
+            ghcr.io/remuriin/rag-api:main-${{ github.sha }}-${{ steps.ts.outputs.ts }}
           # the image is told its own name, commit included (see the Dockerfile)
           build-args: |
             GIT_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/remuriin/RAG-API
-
-  # Logs in to the VPS as the "deploy" user. This repository's key can do one thing there: ask for a
-  # deployment in the rem-raas-backend namespace to run the image of a commit (k8s-deploy in the Cluster
-  # repository). That script waits for the new pod, and goes back to the old image by itself if it is
-  # not healthy, which makes this job fail.
-  #
-  # The management API goes first: it brings the database up to date before it starts. Then the control
-  # agent, which is only "healthy" once it has moved every client's service to this build, one at a
-  # time. So a build that breaks the services fails here too, and the services go back with the agent.
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: make the cluster run this commit
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-        run: |
-          [ -n "$DEPLOY_KEY" ] || { echo "the DEPLOY_KEY secret is not set"; exit 1; }
-          mkdir -p ~/.ssh
-          # the VPS's public host key, so the key is only ever offered to the real VPS
-          echo "140.245.60.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBanLnPlG+CZMZyISZMZcqZRg3x0MIBK7sYoCjenpObq" > ~/.ssh/known_hosts
-          install -m 600 /dev/null ~/.ssh/deploy
-          echo "$DEPLOY_KEY" > ~/.ssh/deploy
-          ssh -i ~/.ssh/deploy deploy@140.245.60.8 "management $GITHUB_SHA"
-          ssh -i ~/.ssh/deploy deploy@140.245.60.8 "agent $GITHUB_SHA"
