@@ -20,9 +20,11 @@ function assertUuid(id: string): void {
 
 const deploymentPath = (id: string) => `/apis/apps/v1/namespaces/${CLIENTS_NAMESPACE}/deployments/rag-${id}`;
 const servicePath = (id: string) => `/api/v1/namespaces/${CLIENTS_NAMESPACE}/services/rag-${id}`;
+const routePath = (id: string) =>
+  `/apis/gateway.networking.k8s.io/v1/namespaces/${CLIENTS_NAMESPACE}/httproutes/rag-${id}`;
 
-// One call to the cluster's API. The agent may create, change, read and delete Deployments and
-// Services in the clients' namespace and nothing else (see apps/rag-api/agent-rbac.yaml in the Fleet repo).
+// One call to the cluster's API. The agent may create, change, read and delete Deployments, Services
+// and HTTPRoutes in the clients' namespace and nothing else (see apps/rag-api/agent-rbac.yaml in the Fleet repo).
 async function kube(method: string, path: string, yaml?: string): Promise<Response> {
   const token = (await readFile(KUBE_TOKEN_FILE, "utf-8")).trim();
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
@@ -57,7 +59,7 @@ async function currentImage(id: string): Promise<string | null> {
   return deployment?.spec?.template?.spec?.containers?.[0]?.image ?? null;
 }
 
-// Creates the service's pod and its name, or brings them in line with the template.
+// Creates the service's pod, its name and its address, or brings them in line with the template.
 export async function startService(id: string, image: string = RAG_IMAGE): Promise<void> {
   assertUuid(id);
   if (DRY_RUN) {
@@ -67,12 +69,19 @@ export async function startService(id: string, image: string = RAG_IMAGE): Promi
   const template = await readFile(CLIENT_TEMPLATE, "utf-8");
   // the id is a checked UUID and the image comes from this process's own settings, never from a request
   const filled = template.replaceAll("__INSTANCE_ID__", id).replaceAll("__IMAGE__", image);
-  const [deployment, service, ...rest] = filled.split(/^---\s*$/m);
-  if (!deployment?.includes("kind: Deployment") || !service?.includes("kind: Service") || rest.length) {
-    throw new Error(`${CLIENT_TEMPLATE} must hold a Deployment and then a Service`);
+  const [deployment, service, route, ...rest] = filled.split(/^---\s*$/m);
+  if (
+    !deployment?.includes("kind: Deployment") ||
+    !service?.includes("kind: Service") ||
+    !route?.includes("kind: HTTPRoute") ||
+    rest.length
+  ) {
+    throw new Error(`${CLIENT_TEMPLATE} must hold a Deployment, a Service and an HTTPRoute, in that order`);
   }
   await apply(deploymentPath(id), deployment);
   await apply(servicePath(id), service);
+  // last, so visitors are only sent to a service that exists
+  await apply(routePath(id), route);
 }
 
 export async function stopService(id: string): Promise<void> {
@@ -81,6 +90,8 @@ export async function stopService(id: string): Promise<void> {
     console.log(`  [dry run] delete rag-${id}`);
     return;
   }
+  // first, so visitors stop being sent to the service before it goes
+  await remove(routePath(id));
   await remove(deploymentPath(id));
   await remove(servicePath(id));
 }

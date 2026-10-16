@@ -65,22 +65,26 @@ const { startService, stopService, updateService, waitForHealth } = await import
 
 const deployment = `/apis/apps/v1/namespaces/${NS}/deployments/rag-${ID}`;
 const service = `/api/v1/namespaces/${NS}/services/rag-${ID}`;
+const route = `/apis/gateway.networking.k8s.io/v1/namespaces/${NS}/httproutes/rag-${ID}`;
 
-// setting a service up: the template, filled in, goes to the two right places
+// setting a service up: the template, filled in, goes to the three right places, the route last
 await startService(ID);
-assert.deepEqual([...objects.keys()], [deployment, service]);
+assert.deepEqual([...objects.keys()], [deployment, service, route]);
 const sent = objects.get(deployment)!;
 assert.equal(imageOf(sent), NEW_IMAGE, "the agent's own image");
 assert.ok(sent.includes(`name: rag-${ID}`) && sent.includes(`value: "${ID}"`), "the service id is filled in");
-assert.ok(!/__[A-Z_]+__/.test(sent + objects.get(service)), "no placeholder is left");
+assert.ok(!/__[A-Z_]+__/.test(sent + objects.get(service) + objects.get(route)), "no placeholder is left");
 assert.ok(sent.includes("kind: Deployment") && objects.get(service)!.includes("kind: Service"));
+const sentRoute = objects.get(route)!;
+assert.ok(sentRoute.includes("kind: HTTPRoute") && sentRoute.includes(`value: /i/${ID}`), "the route is for this id");
+assert.ok(sentRoute.includes(`name: rag-${ID}`) && sentRoute.includes('remservers.me/client-route: "true"'), "the route points at the service and carries the policy's label");
 assert.ok(calls.every((c) => c.auth === "Bearer test-token"), "every call carries the pod's token");
 assert.ok(calls.every((c) => c.method === "PATCH" && c.type === "application/apply-patch+yaml"));
 await waitForHealth(ID);
 
 // safe to repeat
 await startService(ID);
-assert.equal(objects.size, 2);
+assert.equal(objects.size, 3);
 
 // nothing but a UUID is ever acted on
 for (const bad of ["", "../x", `${ID}/x`, "rag", `${ID} `]) {
@@ -95,9 +99,11 @@ broken.add(NEW_IMAGE);
 await assert.rejects(waitForHealth(ID), /did not answer on \/health within 1\.5s/);
 broken.clear();
 
-// removing a service, and removing it again
+// removing a service, and removing it again; the route goes first, so no visitor is sent to a pod being stopped
+calls.length = 0;
 await stopService(ID);
 assert.equal(objects.size, 0);
+assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [`DELETE ${route}`, `DELETE ${deployment}`, `DELETE ${service}`]);
 await stopService(ID);
 
 // a deploy: a service on the old image moves to the new one
@@ -121,7 +127,7 @@ broken.clear();
 await stopService(ID);
 await updateService(ID);
 assert.equal(imageOf(objects.get(deployment)!), NEW_IMAGE);
-assert.ok(objects.has(service));
+assert.ok(objects.has(service) && objects.has(route));
 
 // the cluster refusing a call is an error with its reason in it
 writeFileSync(join(dir, "token"), "wrong\n");

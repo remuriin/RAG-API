@@ -1,5 +1,5 @@
 # What one client service looks like in the cluster: "keep one pod of the backend's image running as
-# this service", and a name the pod is found by.
+# this service", a name the pod is found by, and the address visitors reach it at.
 #
 # This file is the control agent's template: it fills in the two placeholders and hands the result to
 # Kubernetes for every service it sets up (src/agent/system.ts). It is copied into the image.
@@ -8,7 +8,7 @@
 # To set one up by hand:
 #   sed 's/__INSTANCE_ID__/<the service id>/g; s#__IMAGE__#ghcr.io/remuriin/rag-api:main#' k8s/client.yaml | sudo kubectl apply -f -
 #
-# The first document must stay the Deployment and the second the Service: the agent sends them in that order.
+# The documents must stay in this order, Deployment, Service, HTTPRoute: the agent sends them in that order.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,7 +80,7 @@ spec:
               drop: ["ALL"]
 ---
 # The name the pod is found by: rag-<id>.rem-raas-clients.svc.cluster.local
-# The address behind it is picked by the cluster; nginx and the management API use the name.
+# The address behind it is picked by the cluster; the route below and the management API use the name.
 apiVersion: v1
 kind: Service
 metadata:
@@ -95,3 +95,67 @@ spec:
   ports:
     - port: 80
       targetPort: 3000
+---
+# The address visitors reach the service at: rag.remservers.me/i/<id>/... (and the older sslip name).
+# The front door (Envoy, the Gateway "public" in the Fleet repo) strips /i/<id>, so the service sees
+# /health, /documents, /query. The rate limit, the size limit, the 300 s timeout and the JSON errors come
+# from the policy "clients" in the Fleet repo (apps/rag-api/api-policy.yaml), which finds this route by
+# its label.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rag-__INSTANCE_ID__
+  namespace: rem-raas-clients
+  labels:
+    app: rag
+    remservers.me/client-route: "true"
+spec:
+  parentRefs:
+    - name: public
+      namespace: envoy-gateway-system
+      sectionName: https
+    - name: public
+      namespace: envoy-gateway-system
+      sectionName: https-rag-sslip
+  hostnames:
+    - rag.remservers.me
+    - rag.140-245-60-8.sslip.io
+  rules:
+    # /i/<id> without the slash at the end: sent on to /i/<id>/
+    - matches:
+        - path:
+            type: Exact
+            value: /i/__INSTANCE_ID__
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /i/__INSTANCE_ID__/
+            statusCode: 301
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /i/__INSTANCE_ID__
+      backendRefs:
+        - name: rag-__INSTANCE_ID__
+          port: 80
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: max-age=63072000; includeSubDomains
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: X-Frame-Options
+                value: DENY
+              - name: Referrer-Policy
+                value: strict-origin-when-cross-origin
+              - name: Permissions-Policy
+                value: camera=(), microphone=(), geolocation=()

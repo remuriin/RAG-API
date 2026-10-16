@@ -153,7 +153,7 @@ curl -X DELETE $API/instances/<id> -H "Authorization: Bearer $TOKEN"
 
 The agent does this by itself for every `pending` row; nothing here is done by hand.
 
-It fills in `k8s/client.yaml` (a copy is inside the image) with the service's id and with the agent's own image, and hands the result to Kubernetes: a Deployment and a Service, both named `rag-<instanceId>`. Then it waits until the pod answers `/health` and marks the row `active`. For a `deleting` row it deletes both and then the row.
+It fills in `k8s/client.yaml` (a copy is inside the image) with the service's id and with the agent's own image, and hands the result to Kubernetes: a Deployment, a Service and an HTTPRoute (the address `/i/<instanceId>/` at the front door), all named `rag-<instanceId>`. Then it waits until the pod answers `/health` and marks the row `active`. For a `deleting` row it deletes the three, the route first, and then the row.
 
 - The old pod of a service is stopped before a new one starts (`strategy: Recreate`). A service marks its unfinished uploads as failed when it starts, so two pods of one service alive at once would fail an upload the old one is still doing.
 - A pod being replaced gets 300 seconds to finish the requests it already has (a PDF upload can run for close to four minutes).
