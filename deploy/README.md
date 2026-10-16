@@ -14,25 +14,26 @@ https://rag.remservers.me/api/...             the management API
 https://rag.remservers.me/i/<instanceId>/...  one client's service
 ```
 
-The older name `rag.140-245-60-8.sslip.io` still answers, on the same certificate.
+The older name `rag.140-245-60-8.sslip.io` still answers (its own certificate, from cert-manager).
 
 ```
 cluster (k3s)
 └── node: rem-vm (the VPS)
+    ├── namespace envoy-gateway-system the front door: Envoy on ports 80 and 443, and its certificates
     ├── namespace flux-system          Flux: applies the Fleet repository, deploys new builds
     ├── namespace flagger-system       Flagger: blue-green for the web app and the management API
     ├── namespace rem-raas             the web app (from the RaaS repository)
     ├── namespace rem-raas-backend
-    │   ├── pod: management-primary    what users get, Service "management", where nginx sends /api
+    │   ├── pod: management-primary    what users get, Service "management", where the front door sends /api
     │   ├── pod: management            a new build being checked, only during a deploy
     │   └── pod: agent                 no address
     └── namespace rem-raas-clients
         └── pod: rag-<instanceId>      one per service, found by name
 ```
 
-Outside the cluster, on the VPS itself: nginx (the only thing the internet talks to), Postgres, and the nightly database dump.
+Outside the cluster, on the VPS itself: Postgres and the nightly database dump. The internet talks only to the front door, which runs in the cluster (Envoy Gateway, set up in Fleet's `infrastructure/`).
 
-Commands below are run on the VPS unless stated otherwise. Needs: Ubuntu 22.04, k3s (see the `Cluster` repository), Postgres with the `vector` extension, nginx, certbot. Node is not needed on the VPS: nothing is built or run there outside the cluster.
+Commands below are run on the VPS unless stated otherwise. Needs: Ubuntu 22.04, k3s (see the `Cluster` repository), Postgres with the `vector` extension. Node is not needed on the VPS: nothing is built or run there outside the cluster.
 
 ## One-time setup
 
@@ -118,24 +119,14 @@ The agent's permissions (`apps/rag-api/agent-rbac.yaml` in Fleet), and that is a
 
 `/api/health` needs no login: it says whether the database answers and whether the agent has checked in within the last minute (`agent: "stale"` and a 503 otherwise). Point a monitor at `https://rag.remservers.me/api/health`, so a dead agent is noticed. The cluster's own readiness check uses `/api/ready` instead, which asks the database only: a dead agent must not take the dashboard's API down with it.
 
-### 4. nginx site and HTTPS
+### 4. The front door and HTTPS
 
-```bash
-RAW=https://raw.githubusercontent.com/remuriin/RAG-API/main/deploy/nginx
-sudo curl -fsS -o /etc/nginx/snippets/rag-headers.conf   $RAW/headers.conf
-sudo curl -fsS -o /etc/nginx/snippets/rag-api.conf       $RAW/api-location.conf
-sudo curl -fsS -o /etc/nginx/snippets/rag-app.conf       $RAW/app-location.conf
-sudo curl -fsS -o /etc/nginx/snippets/rag-errors.conf    $RAW/errors.conf
-sudo curl -fsS -o /etc/nginx/snippets/rag-instances.conf $RAW/instances.conf
-sudo curl -fsS -o /etc/nginx/sites-available/rag.conf    $RAW/rag.conf
-sudo ln -s /etc/nginx/sites-available/rag.conf /etc/nginx/sites-enabled/rag.conf
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d rag.remservers.me
-```
+Nothing to do by hand: the addresses are Gateway API routes in Fleet, applied by Flux, and the certificates are made and renewed by cert-manager in the cluster.
 
-Certbot edits the installed site file in place (adds the `listen 443` block and the HTTP→HTTPS redirect), so after this step never copy `rag.conf` over it again; apply later changes to the site file by hand. The snippets can be copied over freely.
-
-`rag-instances.conf` is one rule for every client's service. nginx finds the pod `rag-<instanceId>` by name, asking the cluster's own name lookup (`10.43.0.10`) per request, so nothing in nginx changes when a service is created or deleted. An address whose id has no service answers with the JSON 503 of `rag-errors.conf`; an id that is not a UUID answers 404.
+- `/api/` is the route `apps/rag-api/route.yaml`, with a 300 s timeout for uploads. Its limits are `apps/rag-api/api-policy.yaml`: 10 requests a second and 300 a minute per visitor address, 11 MiB per request, and JSON replies (413, 429, 503) in place of the front door's own plain-text errors.
+- `/` and `/assets/` are the route `apps/raas/route.yaml`, with the security headers and the Content-Security-Policy. An address under `/i/` that no service claims answers `{"error":"Unknown service"}` with a 404.
+- `/i/<instanceId>/` is one route per service, made by the agent with the service (`k8s/client.yaml`, the third document). The policy `clients` in the same Fleet file gives those routes the same limits as `/api/`, found by their label `remservers.me/client-route: "true"`, plus the 300 s timeout.
+- Certificates: `rag.remservers.me` is covered by the wildcard `*.remservers.me` (DNS-01 through Cloudflare), `rag.140-245-60-8.sslip.io` has its own (HTTP-01). Both in Fleet's `infrastructure/configs/`.
 
 ### Using it
 
@@ -180,17 +171,17 @@ The agent, when it starts, brings every client's service to its own build, one a
 
 Going back: in Fleet, take the `# {"$imagepolicy": ...}` marker off the image lines and set the old tag by hand, commit and push; the bot then leaves those lines alone. Put the markers back to follow `main` again. A management build that fails Flagger's checks never reaches users: Flagger throws it away by itself. A broken agent build has no automatic way back: pin the old tag.
 
-A change to the cluster files is a commit to Fleet. A change to `k8s/client.yaml` (the template the agent fills in for each service, the only cluster file still in this repository) reaches the services with the next build, since the agent reads its copy from the image. A changed nginx snippet is copied again (`curl` line above), then `sudo nginx -t && sudo systemctl reload nginx`.
+A change to the cluster files is a commit to Fleet. A change to `k8s/client.yaml` (the template the agent fills in for each service, the only cluster file still in this repository) reaches the services with the next build, since the agent reads its copy from the image: when it starts, it applies the template again to every service, routes included.
 
 ## The web app
 
-The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs in the namespace `rem-raas`. nginx forwards `/` to its Service by name, `web.rem-raas.svc.cluster.local`. Its cluster files are in Fleet (`apps/raas/`).
+The dashboard is built from the `RaaS` repository (`frontend/`) into a container image, and runs in the namespace `rem-raas`. The front door sends `/` to its Service `web` (route `apps/raas/route.yaml`). Its cluster files are in Fleet (`apps/raas/`).
 
-A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image and stores it as `ghcr.io/remuriin/raas-web`. Flux deploys it the same way as the backend, blue-green through Flagger: the new version is checked beside the old one and only then switched to, and a version that fails its checks is thrown away by itself. No nginx reload is needed.
+A push to `main` in `RaaS` that touches `frontend/` runs the linter, builds the image and stores it as `ghcr.io/remuriin/raas-web`. Flux deploys it the same way as the backend, blue-green through Flagger: the new version is checked beside the old one and only then switched to, and a version that fails its checks is thrown away by itself.
 
-The container sets the caching (`index.html` never cached, `/assets/` cached for a year). The snippet `rag-app.conf` adds the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
+The container sets the caching (`index.html` never cached, `/assets/` cached for a year). The route adds the security headers and a Content-Security-Policy that allows Firebase's sign-in pop-up. The app itself reloads when a tab open from before the deploy asks for a file that no longer exists.
 
-If the web app's pod is down, `/` answers 502 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
+If the web app's pod is down, `/` answers 503 while `/api/` and `/i/` keep working. `sudo kubectl -n rem-raas get pods` and `sudo kubectl -n rem-raas describe pod -l app=web` say why.
 
 Before the first deploy, in the Firebase console, `rag.remservers.me` must be on Authentication → Settings → Authorized domains (it is).
 
@@ -198,9 +189,9 @@ Before the first deploy, in the Firebase console, `rag.remservers.me` must be on
 
 A service takes `.md`, `.txt`, `.pdf`, `.html` and `.xml` files. Markdown and plain text are stored as they are. A PDF, a web page and XML are first written out as markdown by a Gemini model, and only that markdown is kept.
 
-- Limits: 10 MB for a PDF, 500 KB for the others. nginx allows 11 MB (`client_max_body_size` in the site file), the service applies the real limit per kind.
+- Limits: 10 MB for a PDF, 500 KB for the others. The front door allows 11 MiB (`requestBuffer` in Fleet's `apps/rag-api/api-policy.yaml`), the service applies the real limit per kind.
 - Models: `gemini-3.8-flash` first, `gemini-3.5-flash-lite` when the first is busy or does not start replying within 25 seconds. Both differ from the model that answers questions, so converting never uses the answers' quota. The two names are the defaults in `src/ingest/convert.ts`. A service also reads `GEMINI_CONVERT_MODEL` and `GEMINI_CONVERT_FALLBACK_MODEL` from its environment; to set them for every service, add them to `agent.env` and recreate the `rag-env` secret.
-- Time: a conversion gets 230 seconds, because the whole upload has to finish inside the 5 minutes nginx and the relay wait. A file that needs longer is refused whole. In practice that is about 60 dense pages.
+- Time: a conversion gets 230 seconds, because the whole upload has to finish inside the 5 minutes the front door and the relay wait. A file that needs longer is refused whole. In practice that is about 60 dense pages.
 - `npx tsx scripts/check-convert.ts` checks the rules with a pretend model.
 
 ## Logs and status
@@ -251,8 +242,10 @@ sudo kubectl -n rem-raas-clients scale deployment -l app=rag --replicas=1
 sudo flux resume kustomization rag-api rag-api-agent --kubeconfig=/etc/rancher/k3s/k3s.yaml
 ```
 
-A service that exists in the restored database but has no pod gets one when the agent starts. A pod whose service is not in the restored database is left over: delete it with `sudo kubectl -n rem-raas-clients delete deployment,service rag-<instanceId>`.
+A service that exists in the restored database but has no pod gets one when the agent starts. A pod whose service is not in the restored database is left over: delete it with `sudo kubectl -n rem-raas-clients delete httproute,deployment,service rag-<instanceId>`.
 
 ## Before the cluster
 
 Until 2026-10-13 the backend ran on systemd from a checkout in `/opt/rag`: `rag-management`, `rag-agent`, and one `rag@<instanceId>` unit per service with its own port, env file (`/etc/rag`) and nginx route file (`/etc/nginx/rag-instances`), all driven by a root-owned helper, `rag-ctl`. None of that exists any more, on the VPS or in this repository; the git history before that date has the files.
+
+Until 2026-10-16 the front door was nginx on the VPS, with its site files in `deploy/nginx/` (one rule for every client's service, found by name through the cluster's DNS) and certificates from certbot. Envoy Gateway in the cluster replaced it; the git history before that date has the files.

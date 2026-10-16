@@ -12,4 +12,4 @@ function requireInstanceId(): string {
 export const INSTANCE_ID = requireInstanceId();
 
 export const PORT = Number(process.env.PORT ?? 3000);
-export const HOST = process.env.HOST ?? "127.0.0.1"; // nginx is the public entry
+export const HOST = process.env.HOST ?? "127.0.0.1"; // the front door (Envoy, in the cluster) is the public entry

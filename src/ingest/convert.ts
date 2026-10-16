@@ -80,8 +80,8 @@ const SYSTEM_INSTRUCTION: Record<"pdf" | "html" | "xml", string> = {
 const CARRY_ON =
   "Carry on exactly where you stopped, from the next character. Do not repeat anything you already wrote and do not start again.";
 
-// The whole conversion has to fit inside one upload request, which nginx and the dashboard's relay
-// give up on after 5 minutes; the rest of that time is for splitting, embedding and storing.
+// The whole conversion has to fit inside one upload request, which the front door and the dashboard's
+// relay give up on after 5 minutes; the rest of that time is for splitting, embedding and storing.
 // The model writes a few hundred characters a second, so this is what limits a file's length in practice.
 const BUDGET_MS = 230_000;
 // A reply that has not begun after this long is a model that is stuck, not one that is working.

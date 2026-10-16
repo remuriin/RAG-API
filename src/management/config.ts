@@ -5,7 +5,7 @@ function required(name: string): string {
 }
 
 export const MGMT_PORT = integer("MGMT_PORT", 4050);
-export const MGMT_HOST = process.env.MGMT_HOST ?? "127.0.0.1"; // nginx is the public entry
+export const MGMT_HOST = process.env.MGMT_HOST ?? "127.0.0.1"; // the front door (Envoy, in the cluster) is the public entry
 
 // Only the project id is needed to verify ID tokens; no service account key
 export const FIREBASE_PROJECT_ID = required("FIREBASE_PROJECT_ID");

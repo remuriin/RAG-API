@@ -33,7 +33,7 @@ export class IngestQueueFullError extends Error {
 }
 
 // One ingest at a time per process, so several uploads in a row don't pile onto the CPU or the Gemini rate limit.
-// The line has a maximum length: nginx gives up on a request after 5 minutes, and an upload that
+// The line has a maximum length: the front door gives up on a request after 5 minutes, and an upload that
 // would only start after that is better refused at once than worked on for nobody.
 const MAX_WAITING = 5;
 let waiting = 0;
