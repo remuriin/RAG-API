@@ -1,2 +1,3 @@
 # Files run or read on the Linux VPS must keep LF line endings, even when edited on Windows
 deploy/** text eol=lf
+graphify-out/graph.json merge=graphify
