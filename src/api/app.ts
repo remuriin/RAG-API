@@ -12,6 +12,7 @@ import { DocumentExistsError, EmptyDocumentError, IngestQueueFullError, ingestDo
 import { deleteDocument, listDocuments } from "../ingest/store.js";
 import { retrieveRelevantChunks } from "../retrieve/search.js";
 import { clientError } from "../util/http-errors.js";
+import { allowBrowserQueries } from "./cors.js";
 import { parseHistory } from "./history.js";
 import { isRetryable } from "../util/retry.js";
 
@@ -57,6 +58,8 @@ export function createApp() {
     })
   );
 
+  // before the key check: a browser's CORS preflight for /query carries no key
+  app.use(allowBrowserQueries);
   app.use(requireApiKey);
 
   app.get(

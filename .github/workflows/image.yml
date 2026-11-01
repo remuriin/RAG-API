@@ -43,6 +43,7 @@ jobs:
       - run: npx tsx scripts/check-history.ts
       - run: npx tsx scripts/check-convert.ts
       - run: npx tsx scripts/check-persona.ts
+      - run: npx tsx scripts/check-cors.ts
 
   build:
     needs: check
