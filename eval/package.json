@@ -1,0 +1,13 @@
+﻿{
+  "name": "tricycall-eval",
+  "private": true,
+  "type": "module",
+  "description": "Tricycall Eval harness. Kept apart from the root package.json so the app image is not rebuilt for eval-only changes.",
+  "scripts": {
+    "eval": "tsx harness/cli.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0"
+  }
+}
+
