@@ -1,4 +1,4 @@
-// Tricycall Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
+// Rem Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
 import "./env.js";
 import { answerRun, type RunFile } from "./answer.js";
 import { CASES, paths, readJson, runSlug, selectCases, spread } from "./data.js";
@@ -10,10 +10,10 @@ import { closeDb, ingestCorpus, retrieveAll } from "./rem.js";
 import { compare, modelReport, status } from "./report.js";
 
 const HELP = `
-Tricycall Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
+Rem Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
 
   status                         spend so far, and which runs and judgements exist
-  ingest [--fresh]               upload eval/corpus to the Tricycall Eval instance (--fresh: all docs again)
+  ingest [--fresh]               upload <data>/corpus to the eval instance (--fresh: all docs again)
   retrieve [--fresh]             rewrite follow-ups and retrieve the top 5 for every case (once, shared)
   cost --model M [--limit 10]    answer and judge a few cases normally, then estimate the full round
   answer --model M [--run 1] [--oracle] [--batch] [--split dev|held] [--limit N] [--ids a,b]
@@ -26,8 +26,9 @@ Tricycall Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
   compare --a M1 --b M2 [--split held]   paired McNemar test of two models
 
 Answer models: ${ANSWER_MODELS.join(", ")}
-Claude runs are refused until the hand check shows the main judge agreeing 90% or more,
-unless --skip-gate is given.
+Models other than gemini-3.1-flash-lite and claude-haiku-5-5 are refused until a hand check on
+one of those two shows the judge agreeing 90% or more, unless --skip-gate is given.
+The test content is read from EVAL_DATA_DIR (the private rem-eval-data repo).
 `;
 
 function args(argv: string[]) {
@@ -54,19 +55,24 @@ function needModel(a: Record<string, string | boolean>): string {
 const judgesOf = (a: Record<string, string | boolean>): JudgeKey[] =>
   a.judge === "gemini" ? ["gemini"] : a.judge === "both" ? ["claude", "gemini"] : ["claude"];
 
-const BASELINE = "gemini-3.1-flash-lite";
+// The cheap models whose runs can be hand-checked to open the gate
+const GATE_MODELS = ["gemini-3.1-flash-lite", "claude-haiku-5-5"];
 
-// The hand check on the Gemini baseline must show the judge at 90% or more
+// A hand check on one of the gate models must show the judge at 90% or more on 25+ cases before
+// any other model runs. The gate models themselves always run, so they can be hand-checked.
 function gate(model: string, skip: boolean): void {
-  if (!isClaude(model) || skip) return;
-  const slug = runSlug(BASELINE, "normal", 1);
-  const hand = readJson<{ run: string; labels: Record<string, string> }>(paths.handcheck(slug));
-  const judged = hand && readJson<JudgedFile>(paths.judged(slug, "claude"));
-  const ids = hand && judged ? Object.keys(hand.labels).filter((id) => judged.verdicts[id]) : [];
-  const share = ids.length ? ids.filter((id) => hand!.labels[id] === judged!.verdicts[id].label).length / ids.length : 0;
-  if (ids.length < 25 || share < 0.9) {
-    throw new Error(`Gate: the hand check has ${ids.length} labelled cases with ${Math.round(share * 100)}% agreement; it needs 25+ cases and 90%. Run "handcheck" first.`);
+  if (GATE_MODELS.includes(model) || skip) return;
+  let best = { ids: 0, share: 0 };
+  for (const m of GATE_MODELS) {
+    const slug = runSlug(m, "normal", 1);
+    const hand = readJson<{ labels: Record<string, string> }>(paths.handcheck(slug));
+    const judged = hand && readJson<JudgedFile>(paths.judged(slug, "claude"));
+    const ids = hand && judged ? Object.keys(hand.labels).filter((id) => judged.verdicts[id]) : [];
+    const share = ids.length ? ids.filter((id) => hand!.labels[id] === judged!.verdicts[id].label).length / ids.length : 0;
+    if (ids.length >= 25 && share >= 0.9) return;
+    if (ids.length > best.ids) best = { ids: ids.length, share };
   }
+  throw new Error(`Gate: no hand check yet with 25+ cases at 90% agreement (best so far: ${best.ids} cases, ${Math.round(best.share * 100)}%). Run "handcheck --model ${GATE_MODELS[1]}" or "handcheck" first.`);
 }
 
 async function main() {

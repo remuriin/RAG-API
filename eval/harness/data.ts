@@ -29,7 +29,9 @@ const facts = JSON.parse(readFileSync(join(EVAL_DIR, "facts.json"), "utf8"));
 const cases = JSON.parse(readFileSync(join(EVAL_DIR, "cases.json"), "utf8"));
 export const FACTS: Record<string, Fact> = facts.facts;
 export const CASES: Case[] = cases.cases;
-export const VERSIONS = { corpus: cases.corpus_version as string, cases: cases.version as string, facts: facts.version as string };
+// <data>/product.json: { "name": "...", "description": "a fictional ... in the Philippines" }
+export const PRODUCT: { name: string; description: string } = JSON.parse(readFileSync(join(EVAL_DIR, "product.json"), "utf8"));
+export const VERSIONS ={ corpus: cases.corpus_version as string, cases: cases.version as string, facts: facts.version as string };
 
 // "fares.md#Discounts" matches a chunk of fares.md whose heading path contains "Discounts"
 export function matches(alternative: string, p: { source: string; headingPath: string }): boolean {
