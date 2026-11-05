@@ -409,6 +409,39 @@ failure for a support assistant.
   the held-out split (about 60 cases) a gap under about 15 points is not evidence of a
   difference.
 
+### 6.6 Model limit or pipeline limit
+
+A RAG pipeline controls what the model reads, not how well it reasons about it. The published
+numbers show how large that second part is:
+- FRAMES: Gemini-Pro-1.5 given the gold articles scored 73%, and about 80% of the remaining errors
+  were numerical, tabular or post-processing.
+- MultiHop-RAG: with the ground-truth evidence, GPT-4 scored 0.89 and Llama-2-70B 0.32 on the same
+  inputs.
+
+Tricycall Eval measures this for every model in two ways.
+
+**1. Every failed answer is split by cause.**
+
+| Cause | When | Fixed by |
+|---|---|---|
+| pipeline | an expected source was not in the top 5, or fell under the similarity floor (F2, F3) | better retrieval, chunking or prompts |
+| model | every expected source was in the passages, and the answer is still missing, partial or incorrect (F4–F10, F12) | only a more capable model |
+
+**2. An oracle run.**
+- The harness skips retrieval and gives the model the chunks under its key facts' sources,
+  in a fixed order, filled up to 5 with the case's normally retrieved chunks so the context is the
+  same size.
+- The answer prompt is unchanged, and the judges label it the same way.
+- Must-refuse cases have no key facts, so they are left out of the oracle run.
+
+What the two runs give:
+- **Oracle score:** the model's ceiling on this test set. Retrieval improvements cannot take a
+  model above it.
+- **Oracle score minus normal score:** what retrieval costs today.
+
+An oracle run is one run per model, not two. It is a ceiling measurement, not a Verified claim,
+and it is reported on the held-out split next to the normal score.
+
 ## 7. Decisions for phase 2 and 3
 
 ### 7.1 Cases are written by hand
@@ -470,6 +503,7 @@ Each category is split 60/40 into dev and held-out:
   only cited passages. To decide in phase 3: an eval flag on the service, or the harness calling
   `retrieveRelevantChunks` beside the HTTP call.
 - Logs the rewritten question for follow-up cases, so F13 is told apart from retrieval failures.
+- `--oracle` runs the oracle mode from section 6.6; every result records which mode it ran in.
 - Keeps the free-tier pacing of the current `scripts/eval.ts` (3 s between questions, long
   backoff on rate limits). At ~150 cases × 2 runs plus judge calls, a full run is a few hundred
   model calls and takes most of an hour.
@@ -537,6 +571,8 @@ reads the same passages. Two runs each.
 
 - Claude models answer at effort `low`. They take no temperature setting, so the two runs measure
   their run-to-run variation.
+- Each model also gets one oracle run (section 6.6), and every report splits failures into
+  pipeline and model causes.
 - **Gate:** no Claude run starts until the hand check of 30 judged Gemini answers shows at least
   90% agreement with the main judge.
 - The tests run as a script (`scripts/eval` in phase 3). A person labels the hand-check sample in
