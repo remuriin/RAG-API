@@ -381,15 +381,15 @@ failure for a support assistant.
 
 ### 6.4 Keeping the judge honest
 
-- Two fixed judges, pinned by exact model id in every result file:
-  - **main judge:** Claude Opus 5.5 (`claude-opus-5-5`), on its own Anthropic API key;
-  - **second judge:** a larger Gemini model than the answering one, on the Gemini key.
-  CRAG also used two judges from different families. Both judge every case. The report gives
-  both labels and how often they agree. Where they disagree, the case is listed for a person to
-  check.
-- Neither judge alone decides a model it belongs to. A Claude model's answers are reported with
-  the Gemini judge's labels next to the Claude judge's, and the other way round for Gemini. That
-  covers the self-enhancement risk on both sides. The hand check below measures what is left.
+- One fixed judge: Claude Opus 5.5 (`claude-opus-5-5`), pinned by exact model id in every result
+  file. It is never told which model wrote the answer it grades.
+- Not naming the model does not remove self-enhancement bias: a judge can still favour answers in
+  its own family's style. Two hand checks cover it. One is 30 answers from the Gemini baseline,
+  which is the gate below. The other is 15 answers from a Claude model, measuring the judge on
+  its own family directly.
+- A second judge from another family (Gemini) was planned and dropped on 2026-11-05. On the free
+  tier it used up the daily quota the Gemini baseline needs. The harness keeps it as an option
+  (`--judge both`).
 - Hand-label a sample: at least 30 cases across all categories, labelled by hand before reading
   the judge's labels. Report agreement and Cohen's kappa. Target: 90% agreement. Below that, fix the
   judge prompt before trusting any score.
@@ -549,9 +549,9 @@ confirm or reject them. They are not fixes.
 
 ## 9. Decisions (2026-11-05)
 
-1. **Judges:** Claude Opus 5.5 as the main judge, a larger Gemini model as the second (section
-   6.4). The Anthropic API credit for the first round expires on 2026-11-10, so every paid run
-   finishes by 2026-11-09.
+1. **Judge:** Claude Opus 5.5, checked against two hand-labelled samples (section 6.4). The
+   Anthropic API credit for the first round expires on 2026-11-10, so every paid run finishes by
+   2026-11-09.
 2. **Split:** 60/40 dev and held-out, with model-against-model comparisons made by paired McNemar
    tests on the same cases.
 3. **Categories:** 14, with false premise added (section 5).

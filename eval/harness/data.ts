@@ -67,7 +67,7 @@ export const paths = {
   run: (slug: string) => join(RESULTS_DIR, "runs", `${slug}.json`),
   judged: (slug: string, judge: string) => join(RESULTS_DIR, "judged", `${slug}__${judge}.json`),
   ledger: join(RESULTS_DIR, "ledger.jsonl"),
-  handcheck: join(RESULTS_DIR, "handcheck.json"),
+  handcheck: (slug: string) => join(RESULTS_DIR, "handcheck", `${slug}.json`),
   report: (name: string) => join(RESULTS_DIR, "reports", name),
 };
 

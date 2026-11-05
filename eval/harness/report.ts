@@ -144,7 +144,7 @@ export function modelReport(model: string, judge: JudgeKey = "claude"): string {
   const json: Record<string, unknown> = { model, judge, versions: VERSIONS, generatedAt: new Date().toISOString() };
 
   md.push(`# ${model}`, "");
-  md.push(`Tricycall Eval, corpus ${VERSIONS.corpus}, cases ${VERSIONS.cases}. Main judge: ${first.main?.model ?? "(none yet)"}; second judge: ${first.second?.model ?? "(none yet)"}.`);
+  md.push(`Tricycall Eval, corpus ${VERSIONS.corpus}, cases ${VERSIONS.cases}. Judge: ${first.main?.model ?? "(none yet)"}${first.second ? `; second judge: ${first.second.model}` : ""}. The judge never sees which model wrote an answer.`);
   md.push(`Settings: ${Object.entries(first.run.settings).map(([k, v]) => `${k} ${v}`).join(", ")}.`, "");
 
   for (const split of ["held", "dev", "all"] as const) {
@@ -196,12 +196,19 @@ export function modelReport(model: string, judge: JudgeKey = "claude"): string {
     json.flaky = flaky.map((c) => c.id);
   }
 
-  md.push(`## Judges`, "");
+  md.push(`## Judge`, "");
   for (const r of scoredRuns) {
-    if (!r.main || !r.second) {
-      md.push(`- run ${r.run.run}: ${!r.main ? "main" : "second"} judge not run yet.`);
+    if (!r.main) {
+      md.push(`- run ${r.run.run}: not judged yet.`);
       continue;
     }
+    const hand = readJson<{ labels: Record<string, Label> }>(paths.handcheck(r.slug));
+    if (hand) {
+      const ids = Object.keys(hand.labels).filter((id) => r.main!.verdicts[id]);
+      const agree = ids.filter((id) => hand.labels[id] === r.main!.verdicts[id].label).length;
+      md.push(`- run ${r.run.run}: the judge agrees with hand labels on ${agree}/${ids.length} (${pct(agree / Math.max(1, ids.length))}), Cohen's kappa ${kappa(ids.map((id) => hand.labels[id]), ids.map((id) => r.main!.verdicts[id].label)).toFixed(2)}.`);
+    }
+    if (!r.second) continue;
     const ids = Object.keys(r.main.verdicts).filter((id) => r.second!.verdicts[id]);
     const a = ids.map((id) => r.main!.verdicts[id].label);
     const b = ids.map((id) => r.second!.verdicts[id].label);

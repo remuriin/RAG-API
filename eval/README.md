@@ -9,7 +9,7 @@ answers. Why it is built this way is in [RESEARCH.md](RESEARCH.md).
 | Path | What it is |
 |---|---|
 | `RESEARCH.md` | the research behind the suite: failure modes, categories, scoring, decisions |
-| `corpus/*.md` | the Tricycall help center: 21 docs, uploaded to the Tricycall Eval service |
+| `corpus/*.md` | the Tricycall help center: 22 docs, uploaded to the Tricycall Eval service |
 | `facts.json` | every fact a case relies on, with the doc and heading that state it |
 | `cases.json` | 150 test cases in 14 categories, split 88 dev / 62 held-out |
 | `results/` | one file per run (phase 3) |
@@ -66,7 +66,9 @@ One-time setup, from `RAG-API` (PowerShell, with the WireGuard tunnel to the VPS
    Copy the printed `INSTANCE_ID` value into `.env` as `EVAL_INSTANCE_ID=<value>`. Leave the
    existing `INSTANCE_ID` line as it is. The printed API key is not needed.
 2. `cd eval`, then `npm install`.
-3. `npm run eval -- ingest`: uploads the 21 docs (about 134 Gemini embedding calls).
+3. `npm run eval -- ingest`: uploads the 22 docs (134 chunks, so 134 Gemini embedding calls),
+   pausing between docs to stay under the free tier's 100 a minute. Docs already stored are
+   skipped; `--fresh` uploads all of them again after the corpus changes.
 4. `npm run eval -- retrieve`: retrieval for all 150 cases, saved to `results/retrieval.json`.
 
 The first round, in order:
@@ -78,7 +80,11 @@ The first round, in order:
 | 3 | `npm run eval -- handcheck` (you label 30 answers) | no |
 | 4 | `npm run eval -- cost --model claude-haiku-5-5`, then `run --model claude-haiku-5-5 --batch` | yes |
 | 5 | the same for `claude-sonnet-5-5`, then `claude-opus-5-5` | yes |
-| 6 | `npm run eval -- compare --a claude-opus-5-5 --b gemini-3.1-flash-lite` | no |
+| 6 | `npm run eval -- handcheck --model claude-opus-5-5 --size 15` (the judge on its own family) | no |
+| 7 | `npm run eval -- compare --a claude-opus-5-5 --b gemini-3.1-flash-lite` | no |
+
+- **The judge:** Claude Opus 5.5 grades every answer and is never told which model wrote it.
+  `--judge both` adds a Gemini judge, but it uses free-tier quota the baseline needs.
 
 - **The gate:** Claude runs are refused until the hand check (step 3) shows the main judge agreeing
   with you on at least 90% of 25 or more cases.

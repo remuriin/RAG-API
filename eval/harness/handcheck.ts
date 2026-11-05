@@ -1,5 +1,6 @@
-// A person labels a sample of judged answers, blind to the judges' labels, and the judges are
-// measured against those labels. No Claude run should start before the main judge reaches 90%.
+// A person labels a sample of judged answers, blind to the judge's labels, and the judge is
+// measured against those labels: 30 from the Gemini baseline (the gate for any Claude run), and 15
+// from a Claude run, since the judge is a Claude model too and may favour Claude-style answers.
 import { createInterface } from "node:readline/promises";
 import type { RunFile } from "./answer.js";
 import { CASES, FACTS, type Label, paths, readJson, runSlug, spread, writeJson } from "./data.js";
@@ -13,8 +14,7 @@ export async function handcheck(model: string, size: number): Promise<void> {
   const slug = runSlug(model, "normal", 1);
   const run = readJson<RunFile>(paths.run(slug));
   if (!run) throw new Error(`No ${slug} yet.`);
-  const file = readJson<HandFile>(paths.handcheck) ?? { run: slug, labels: {} };
-  if (file.run !== slug) throw new Error(`handcheck.json holds labels for ${file.run}. Move it aside to start a new sample.`);
+  const file = readJson<HandFile>(paths.handcheck(slug)) ?? { run: slug, labels: {} };
   const sample = spread(CASES.filter((c) => run.answers[c.id] && !run.answers[c.id].error), size);
   const todo = sample.filter((c) => !file.labels[c.id]);
 
@@ -37,7 +37,7 @@ export async function handcheck(model: string, size: number): Promise<void> {
       if (key === "q") break;
       if (key !== "s") {
         file.labels[c.id] = KEYS[key];
-        writeJson(paths.handcheck, file);
+        writeJson(paths.handcheck(slug), file);
       }
     }
     rl.close();
@@ -53,7 +53,8 @@ export async function handcheck(model: string, size: number): Promise<void> {
     const machine = both.map((id) => j.verdicts[id].label);
     const agree = human.filter((x, i) => x === machine[i]).length;
     const share = agree / Math.max(1, both.length);
-    console.log(`${judge} judge (${j.model}): agrees on ${agree}/${both.length} (${Math.round(share * 100)}%), kappa ${kappa(human, machine).toFixed(2)}${judge === "claude" ? (share >= 0.9 ? ". Gate passed." : ". Gate NOT passed: fix the judge prompt before any Claude run.") : ""}`);
+    const gateNote = judge === "claude" && !model.startsWith("claude-") ? (share >= 0.9 ? ". Gate passed." : ". Gate NOT passed: fix the judge prompt before any Claude run.") : "";
+    console.log(`${judge} judge (${j.model}): agrees on ${agree}/${both.length} (${Math.round(share * 100)}%), kappa ${kappa(human, machine).toFixed(2)}${gateNote}`);
     const off = both.filter((id) => file.labels[id] !== j.verdicts[id].label);
     for (const id of off) console.log(`  ${id}: you ${file.labels[id]}, judge ${j.verdicts[id].label}: ${j.verdicts[id].reasoning.slice(0, 160)}`);
   }
