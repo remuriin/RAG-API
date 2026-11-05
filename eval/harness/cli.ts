@@ -13,14 +13,15 @@ const HELP = `
 Tricycall Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
 
   status                         spend so far, and which runs and judgements exist
-  ingest                         upload eval/corpus to the Tricycall Eval instance
+  ingest [--fresh]               upload eval/corpus to the Tricycall Eval instance (--fresh: all docs again)
   retrieve [--fresh]             rewrite follow-ups and retrieve the top 5 for every case (once, shared)
   cost --model M [--limit 10]    answer and judge a few cases normally, then estimate the full round
   answer --model M [--run 1] [--oracle] [--batch] [--split dev|held] [--limit N] [--ids a,b]
-  judge --model M [--run 1] [--oracle] [--judge claude|gemini|both] [--batch]
+  judge --model M [--run 1] [--oracle] [--batch]   judged by Claude Opus 5.5
+                                 (--judge gemini|both adds the optional Gemini judge; it uses free-tier quota)
   run --model M [--batch]        answer runs 1 and 2 and the oracle run, judge them, write the report
-                                 (the Gemini judge grades run 1 only; --judge both grades all three)
-  handcheck [--model M] [--size 30]   label a sample yourself and measure the judges against you
+  handcheck [--model M] [--size N]    label a sample yourself and measure the judge against you:
+                                 30 from the Gemini baseline (the gate), then 15 from one Claude model
   report --model M               write results/reports/<model>.md
   compare --a M1 --b M2 [--split held]   paired McNemar test of two models
 
@@ -49,14 +50,18 @@ function needModel(a: Record<string, string | boolean>): string {
   return m;
 }
 
+// One judge, Claude Opus 5.5, unless --judge asks for the optional Gemini one (free tier quota)
 const judgesOf = (a: Record<string, string | boolean>): JudgeKey[] =>
-  a.judge === "claude" ? ["claude"] : a.judge === "gemini" ? ["gemini"] : ["claude", "gemini"];
+  a.judge === "gemini" ? ["gemini"] : a.judge === "both" ? ["claude", "gemini"] : ["claude"];
 
-// The hand check on the Gemini baseline must show the main judge at 90% or more
+const BASELINE = "gemini-3.1-flash-lite";
+
+// The hand check on the Gemini baseline must show the judge at 90% or more
 function gate(model: string, skip: boolean): void {
   if (!isClaude(model) || skip) return;
-  const hand = readJson<{ run: string; labels: Record<string, string> }>(paths.handcheck);
-  const judged = hand && readJson<JudgedFile>(paths.judged(hand.run, "claude"));
+  const slug = runSlug(BASELINE, "normal", 1);
+  const hand = readJson<{ run: string; labels: Record<string, string> }>(paths.handcheck(slug));
+  const judged = hand && readJson<JudgedFile>(paths.judged(slug, "claude"));
   const ids = hand && judged ? Object.keys(hand.labels).filter((id) => judged.verdicts[id]) : [];
   const share = ids.length ? ids.filter((id) => hand!.labels[id] === judged!.verdicts[id].label).length / ids.length : 0;
   if (ids.length < 25 || share < 0.9) {
@@ -76,7 +81,7 @@ async function main() {
       console.log(status());
       break;
     case "ingest":
-      await ingestCorpus();
+      await ingestCorpus(a.fresh === true);
       break;
     case "retrieve":
       await retrieveAll(a.fresh === true);
@@ -96,12 +101,9 @@ async function main() {
     case "run": {
       const model = needModel(a);
       gate(model, a["skip-gate"] === true);
-      // The second judge (Gemini, free tier with a daily cap) grades run 1 only unless --judge says
-      // otherwise; one run is enough to measure how far the two judges agree.
       for (const [m, r] of [["normal", 1], ["normal", 2], ["oracle", 1]] as const) {
         await answerRun(model, m, r, CASES, batch);
-        const judges: JudgeKey[] = a.judge || (m === "normal" && r === 1) ? judgesOf(a) : ["claude"];
-        for (const j of judges) await judgeRun(runSlug(model, m, r), j, batch);
+        for (const j of judgesOf(a)) await judgeRun(runSlug(model, m, r), j, batch);
       }
       console.log(`Report: ${modelReport(model)}`);
       break;
@@ -114,7 +116,6 @@ async function main() {
       const before = spentUsd();
       const runFile = await answerRun(model, "normal", "cost", cases, false);
       await judgeRun(slug, "claude", false);
-      await judgeRun(slug, "gemini", false);
       const judged = readJson<JudgedFile>(paths.judged(slug, "claude"));
       const ans = Object.values((runFile as RunFile).answers);
       const n = ans.length;

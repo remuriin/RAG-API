@@ -147,7 +147,8 @@ export async function runClaudeBatch(
 // ── Gemini ──────────────────────────────────────────────────────────────────────
 
 let google: GoogleGenAI | null = null;
-const gemini = () => (google ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
+// A request that hangs is cut off after 2 minutes and retried, instead of stalling the run
+const gemini = () => (google ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 120_000 } }));
 
 export async function callGemini(
   model: string,
@@ -174,7 +175,8 @@ export async function callGemini(
       };
     } catch (err: any) {
       const status = err?.status ?? err?.code;
-      if ((status === 429 || status === 503 || status === 500) && attempt < 4) {
+      const timedOut = /abort|timeout|timed out/i.test(String(err?.name ?? "") + String(err?.message ?? ""));
+      if ((status === 429 || status === 503 || status === 500 || timedOut) && attempt < 4) {
         const wait = 20_000 * (attempt + 1);
         console.log(`  Gemini ${status}, waiting ${wait / 1000} s`);
         await sleep(wait);
