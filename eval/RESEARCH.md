@@ -5,7 +5,7 @@ published work on RAG failures and RAG evaluation says, what Rem's own pipeline 
 fail, and the decisions that phase 2 (corpus and cases) and phase 3 (harness and baseline) build on.
 
 - Written: 2026-11-05
-- Status: research done; decisions in section 7 wait for review before phase 2 starts
+- Status: research done and reviewed; the open questions in section 9 are decided
 
 Contents
 
@@ -381,11 +381,15 @@ failure for a support assistant.
 
 ### 6.4 Keeping the judge honest
 
-- One fixed judge, pinned by exact model id in every result file, temperature 0.
-- Not the model under test. Rem has only a Gemini key today, so for the Gemini baseline the
-  judge is a larger Gemini model than the one answering. That leaves a self-enhancement risk, which
-  the hand check below measures. When bring-your-own-key brings other providers, the judge moves to
-  a different model family.
+- Two fixed judges, pinned by exact model id in every result file:
+  - **main judge:** Claude Opus 5.5 (`claude-opus-5-5`), on its own Anthropic API key;
+  - **second judge:** a larger Gemini model than the answering one, on the Gemini key.
+  CRAG also used two judges from different families. Both judge every case. The report gives
+  both labels and how often they agree. Where they disagree, the case is listed for a person to
+  check.
+- Neither judge alone decides a model it belongs to. A Claude model's answers are reported with
+  the Gemini judge's labels next to the Claude judge's, and the other way round for Gemini. That
+  covers the self-enhancement risk on both sides. The hand check below measures what is left.
 - Hand-label a sample: at least 30 cases across all categories, labelled by hand before reading
   the judge's labels. Report agreement and Cohen's kappa. Target: 90% agreement. Below that, fix the
   judge prompt before trusting any score.
@@ -509,16 +513,31 @@ confirm or reject them. They are not fixes.
 6. **Numeric cases fail on computation, not reading (F10).** This matches FRAMES' finding that
    most errors left with gold documents are numerical or tabular.
 
-## 9. Open questions
+## 9. Decisions (2026-11-05)
 
-For review before phase 2:
+1. **Judges:** Claude Opus 5.5 as the main judge, a larger Gemini model as the second (section
+   6.4). The Anthropic API credit for the first round expires on 2026-11-10, so every paid run
+   finishes by 2026-11-09.
+2. **Split:** 60/40 dev and held-out, with model-against-model comparisons made by paired McNemar
+   tests on the same cases.
+3. **Categories:** 14, with false premise added (section 5).
 
-1. **Judge model.** The plan is a larger Gemini model than the answer model, on the free key. Its
-   exact id is chosen in phase 3 by what the key offers and its rate limits. Is a same-family judge
-   acceptable for the baseline, with the hand-label check as the guard?
-2. **Held-out size.** 40% of ~150 is ~60 cases, where only gaps of about 15 points mean anything.
-   The options: keep 60/40; go 50/50 (75 held-out, about ±11 points); or keep 60/40 and use
-   paired McNemar tests, which detect smaller gaps on the same cases. The recommendation is the
-   last one.
-3. **Category count.** 14 categories instead of 13 (false premise added). The TODO entry needs
-   updating if accepted.
+### First round of models
+
+All on Rem's current prompts (the universal set), with retrieval done once per case so every model
+reads the same passages. Two runs each.
+
+| Order | Answer model | Why this order |
+|---|---|---|
+| 1 | `gemini-3.1-flash-lite` | Rem's production model; answers are free; it tests the harness and the cases, and is where the judges are hand-checked |
+| 2 | `claude-haiku-5-5` | cheapest Claude model: harness mistakes cost cents |
+| 3 | `claude-sonnet-5-5` | |
+| 4 | `claude-opus-5-5` | |
+| 5 | `claude-fable-5-1` | only if the budget still allows |
+
+- Claude models answer at effort `low`. They take no temperature setting, so the two runs measure
+  their run-to-run variation.
+- **Gate:** no Claude run starts until the hand check of 30 judged Gemini answers shows at least
+  90% agreement with the main judge.
+- The tests run as a script (`scripts/eval` in phase 3). A person labels the hand-check sample in
+  the terminal; it is never labelled by a model.
