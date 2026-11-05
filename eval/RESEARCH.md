@@ -6,6 +6,9 @@ fail, and the decisions that phase 2 (corpus and cases) and phase 3 (harness and
 
 - Written: 2026-11-05
 - Status: research done and reviewed; the open questions in section 9 are decided
+- Note (2026-11-05): the examples below use Tricycall, the first test product. It was replaced the
+  same day by a private one, kept in `remuriin/rem-eval-data` with its cases. The method,
+  categories and scoring are unchanged.
 
 Contents
 

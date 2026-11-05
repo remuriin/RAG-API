@@ -2,7 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RunFile } from "./answer.js";
 import { loadRetrieval } from "./answer.js";
-import { type Case, CASES, type Label, LABEL_SCORE, LABELS, matches, paths, readJson, runSlug, sourceGroups, VERSIONS, writeJson } from "./data.js";
+import { type Case, CASES, PRODUCT, type Label, LABEL_SCORE, LABELS, matches, paths, readJson, runSlug, sourceGroups, VERSIONS, writeJson } from "./data.js";
 import { RESULTS_DIR } from "./env.js";
 import type { JudgedFile, JudgeKey } from "./judge.js";
 import { spentUsd } from "./models.js";
@@ -144,7 +144,7 @@ export function modelReport(model: string, judge: JudgeKey = "claude"): string {
   const json: Record<string, unknown> = { model, judge, versions: VERSIONS, generatedAt: new Date().toISOString() };
 
   md.push(`# ${model}`, "");
-  md.push(`Tricycall Eval, corpus ${VERSIONS.corpus}, cases ${VERSIONS.cases}. Judge: ${first.main?.model ?? "(none yet)"}${first.second ? `; second judge: ${first.second.model}` : ""}. The judge never sees which model wrote an answer.`);
+  md.push(`Rem Eval (${PRODUCT.name}), corpus ${VERSIONS.corpus}, cases ${VERSIONS.cases}. Judge: ${first.main?.model ?? "(none yet)"}${first.second ? `; second judge: ${first.second.model}` : ""}. The judge never sees which model wrote an answer.`);
   md.push(`Settings: ${Object.entries(first.run.settings).map(([k, v]) => `${k} ${v}`).join(", ")}.`, "");
 
   for (const split of ["held", "dev", "all"] as const) {

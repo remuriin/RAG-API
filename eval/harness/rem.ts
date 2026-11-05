@@ -17,9 +17,9 @@ import {
   type PromptOptions,
 } from "../../src/generate/prompts.js";
 import { ingestDocument } from "../../src/ingest/pipeline.js";
-import { deleteDocument, listTopics, readyDocumentExists } from "../../src/ingest/store.js";
+import { deleteDocument, listDocuments, listTopics, readyDocumentExists } from "../../src/ingest/store.js";
 import { retrieveRelevantChunks } from "../../src/retrieve/search.js";
-import { type Case, type Passage, CASES, matches, paths, readJson, sourceGroups, VERSIONS, writeJson } from "./data.js";
+import { type Case, type Passage, CASES, matches, paths, PRODUCT, readJson, sourceGroups, VERSIONS, writeJson } from "./data.js";
 import { EVAL_DIR } from "./env.js";
 import { sleep } from "./models.js";
 
@@ -36,12 +36,20 @@ export async function closeDb(): Promise<void> {
   await db.end();
 }
 
-// Uploads eval/corpus to the Tricycall Eval instance. Docs already stored are skipped unless
-// fresh is set (use it after editing the corpus). The pause keeps embedding calls under the free
-// tier's 100 a minute.
+// Uploads <data>/corpus to the eval instance. Docs already stored are skipped unless fresh is set,
+// which first deletes every document in the instance, including ones no longer in the corpus. The
+// pause keeps embedding calls under the free tier's 100 a minute.
 export async function ingestCorpus(fresh: boolean): Promise<void> {
   const dir = join(EVAL_DIR, "corpus");
   const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  // the assistant calls itself by the product's name, as a client's service does
+  await db.query("UPDATE instances SET product_name = $1 WHERE id = $2", [PRODUCT.name, process.env.INSTANCE_ID]);
+  if (fresh) {
+    for (const doc of await listDocuments()) {
+      await deleteDocument(doc.source);
+      console.log(`  removed ${doc.source}`);
+    }
+  }
   let uploaded = 0;
   for (const file of files) {
     if (!fresh && (await readyDocumentExists(file))) {
