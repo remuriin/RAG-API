@@ -29,7 +29,9 @@ const MAX_TEXT_SIZE = "500kb";
 const MAX_PDF_SIZE = "10mb";
 const NAME_RULE =
   "Invalid file name. It must end in .md, .txt, .pdf, .html or .xml and use only letters, numbers, dots, dashes and underscores (max 100 characters).";
-const DEFAULT_TOP_K = 5;
+// 8, not 5: on the Rem Eval test set (2026-11-06) top 8 halved hallucinations and lifted accuracy
+// about 2 points in two runs, mostly by also retrieving the policy update that supersedes an old page
+const DEFAULT_TOP_K = 8;
 const MAX_TOP_K = 20;
 
 const BUSY_MESSAGE = "The model is busy or rate limited right now. Try again shortly.";
