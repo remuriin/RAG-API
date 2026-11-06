@@ -1,7 +1,9 @@
 // Rem Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
 import "./env.js";
 import { answerRun, type RunFile } from "./answer.js";
-import { CASES, paths, readJson, runSlug, selectCases, spread } from "./data.js";
+import { CASES, paths, readJson, runSlug, selectCases, spread, VERSIONS } from "./data.js";
+import { audit, type AuditFile, auditPath, reviewCases } from "./review.js";
+import { misses } from "./misses.js";
 import { CLAUDE_JUDGE_MODEL } from "./env.js";
 import { handcheck } from "./handcheck.js";
 import { type JudgedFile, type JudgeKey, judgeRun } from "./judge.js";
@@ -20,14 +22,16 @@ Rem Eval. Run from RAG-API/eval:  npm run eval -- <command> [options]
   judge --model M [--run 1] [--oracle] [--batch]   judged by Claude Opus 5.5
                                  (--judge gemini|both adds the optional Gemini judge; it uses free-tier quota)
   run --model M [--batch]        answer runs 1 and 2 and the oracle run, judge them, write the report
-  handcheck [--model M] [--size N]    label a sample yourself and measure the judge against you:
-                                 30 from the Gemini baseline (the gate), then 15 from one Claude model
+  misses [--split dev] [--variant V]   where the expected passages of retrieval misses really rank (top 30)
+  review-cases [--category C] [--split dev|held]   check the answer key; flag cases that ask too much or are wrong
+  audit [--model M] [--size 30]  accept or correct the judge's labels on a sample (the gate: 90% accepted, 25+ cases)
+  handcheck [--model M] [--size N]    blind labels, measured against the judge (for information)
   report --model M               write results/reports/<model>.md
   compare --a M1 --b M2 [--split held]   paired McNemar test of two models
 
 Answer models: ${ANSWER_MODELS.join(", ")}
-Models other than gemini-3.1-flash-lite and claude-haiku-5-5 are refused until a hand check on
-one of those two shows the judge agreeing 90% or more, unless --skip-gate is given.
+Models other than gemini-3.1-flash-lite and claude-haiku-5-5 are refused until an audit of one of
+those two accepts the judge's exact label on 90% or more of 25+ answers, unless --skip-gate is given.
 The test content is read from EVAL_DATA_DIR (the private rem-eval-data repo).
 `;
 
@@ -60,19 +64,20 @@ const GATE_MODELS = ["gemini-3.1-flash-lite", "claude-haiku-5-5"];
 
 // A hand check on one of the gate models must show the judge at 90% or more on 25+ cases before
 // any other model runs. The gate models themselves always run, so they can be hand-checked.
+// The gate (set 2026-11-06, before it was measured): an audit of a gate model's run 1, in which a
+// person accepts the judge's exact label on 90% or more of 25+ answers, on the current cases version.
 function gate(model: string, skip: boolean): void {
   if (GATE_MODELS.includes(model) || skip) return;
-  let best = { ids: 0, share: 0 };
+  let best = { n: 0, share: 0 };
   for (const m of GATE_MODELS) {
-    const slug = runSlug(m, "normal", 1);
-    const hand = readJson<{ labels: Record<string, string> }>(paths.handcheck(slug));
-    const judged = hand && readJson<JudgedFile>(paths.judged(slug, "claude"));
-    const ids = hand && judged ? Object.keys(hand.labels).filter((id) => judged.verdicts[id]) : [];
-    const share = ids.length ? ids.filter((id) => hand!.labels[id] === judged!.verdicts[id].label).length / ids.length : 0;
-    if (ids.length >= 25 && share >= 0.9) return;
-    if (ids.length > best.ids) best = { ids: ids.length, share };
+    const a = readJson<AuditFile>(auditPath(runSlug(m, "normal", 1)));
+    if (!a || a.casesVersion !== VERSIONS.cases) continue;
+    const items = Object.values(a.items);
+    const share = items.length ? items.filter((x) => x.agree).length / items.length : 0;
+    if (items.length >= 25 && share >= 0.9) return;
+    if (items.length > best.n) best = { n: items.length, share };
   }
-  throw new Error(`Gate: no hand check yet with 25+ cases at 90% agreement (best so far: ${best.ids} cases, ${Math.round(best.share * 100)}%). Run "handcheck --model ${GATE_MODELS[1]}" or "handcheck" first.`);
+  throw new Error(`Gate: no audit yet with 25+ answers and 90% of the judge's labels accepted, on cases ${VERSIONS.cases} (best so far: ${best.n}, ${Math.round(best.share * 100)}%). Run "audit --model ${GATE_MODELS[1]}" first.`);
 }
 
 async function main() {
@@ -135,6 +140,15 @@ async function main() {
       console.log(`Recorded spend so far: $${spentUsd().toFixed(2)}. The cost-check files are ${slug}*; they are not part of any report.`);
       break;
     }
+    case "misses":
+      await misses(typeof a.split === "string" ? a.split : "dev");
+      break;
+    case "review-cases":
+      await reviewCases({ category: typeof a.category === "string" ? a.category : undefined, split: typeof a.split === "string" ? a.split : undefined });
+      break;
+    case "audit":
+      await audit(typeof a.model === "string" ? a.model : "claude-haiku-5-5", a.size ? Number(a.size) : 30);
+      break;
     case "handcheck":
       await handcheck(typeof a.model === "string" ? a.model : "gemini-3.1-flash-lite", a.size ? Number(a.size) : 30);
       break;

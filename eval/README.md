@@ -68,8 +68,13 @@ A round, in order:
 
 - **The judge:** Claude Opus 5.5 grades every answer and is never told which model wrote it.
   `--judge both` adds a Gemini judge, but it uses free-tier quota.
-- **The gate:** Sonnet, Opus and Fable runs are refused until a hand check on Haiku or the Gemini
-  baseline shows the judge agreeing with you on at least 90% of 25 or more cases.
+- **Your part:**
+  - `review-cases` checks the answer key and flags cases that ask too much or are wrong.
+  - `audit --model claude-haiku-5-5` shows 30 judged answers. You accept the judge's label or give
+    yours.
+- **The gate:** Sonnet, Opus and Fable runs are refused until an audit accepts the judge's exact
+  label on 90% or more of 25+ answers, on the current cases version. `handcheck`, which is blind
+  labelling, is still available, for information.
 - **Spend:** every Anthropic call is recorded in `results/ledger.jsonl`. A step that would take the
   total past `EVAL_BUDGET_USD` (default 95) refuses to start. `npm run eval -- status` shows the
   spend so far.

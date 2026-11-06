@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { EVAL_DIR, RESULTS_DIR } from "./env.js";
+import { EVAL_DIR, RESULTS_DIR, VARIANT, VARIANT_SPEC } from "./env.js";
 
 export type Label = "correct" | "partial" | "missing" | "incorrect";
 export const LABELS: Label[] = ["correct", "partial", "missing", "incorrect"];
 export const LABEL_SCORE: Record<Label, number> = { correct: 1, partial: 0.5, missing: 0, incorrect: -1 };
+// What accuracy counts: correct or partial
+export const accurate = (label: string) => label === "correct" || label === "partial";
 
 export interface Fact { text: string; source: string[] }
 export interface Turn { role: "user" | "assistant"; content: string }
@@ -65,7 +67,8 @@ export function writeJson(path: string, value: unknown): void {
 }
 
 export const paths = {
-  retrieval: join(RESULTS_DIR, "retrieval.json"),
+  retrieval: join(RESULTS_DIR, VARIANT_SPEC.retrieval ? `retrieval-${VARIANT_SPEC.retrieval}.json` : "retrieval.json"),
+  baseRetrieval: join(RESULTS_DIR, "retrieval.json"),
   run: (slug: string) => join(RESULTS_DIR, "runs", `${slug}.json`),
   judged: (slug: string, judge: string) => join(RESULTS_DIR, "judged", `${slug}__${judge}.json`),
   ledger: join(RESULTS_DIR, "ledger.jsonl"),
@@ -73,7 +76,7 @@ export const paths = {
   report: (name: string) => join(RESULTS_DIR, "reports", name),
 };
 
-export const runSlug = (model: string, mode: "normal" | "oracle", run: number) => `${model}__${mode}__r${run}`;
+export const runSlug = (model: string, mode: "normal" | "oracle", run: number) => `${model}__${mode}${VARIANT ? `-${VARIANT}` : ""}__r${run}`;
 
 export function selectCases(opts: { split?: string; limit?: number; ids?: string[] }): Case[] {
   let list = CASES;

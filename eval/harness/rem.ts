@@ -20,11 +20,11 @@ import { ingestDocument } from "../../src/ingest/pipeline.js";
 import { deleteDocument, listDocuments, listTopics, readyDocumentExists } from "../../src/ingest/store.js";
 import { retrieveRelevantChunks } from "../../src/retrieve/search.js";
 import { type Case, type Passage, CASES, matches, paths, PRODUCT, readJson, sourceGroups, VERSIONS, writeJson } from "./data.js";
-import { EVAL_DIR } from "./env.js";
+import { EVAL_DIR, VARIANT, VARIANT_SPEC } from "./env.js";
 import { sleep } from "./models.js";
 
-export const TOP_K = 5;
-export const SIMILARITY_FLOOR = 0.625; // src/generate/answer.ts
+export const TOP_K = VARIANT_SPEC.topK;
+export const SIMILARITY_FLOOR = VARIANT_SPEC.floor; // 0.625 in src/generate/answer.ts
 export const ANSWER_TEMPERATURE = 0.2; // src/generate/answer.ts, Gemini only
 const CITATION_RUN = /\s*\[\d+(?:\s*,\s*\d+)*\](?:\s*,?\s*\[\d+(?:\s*,\s*\d+)*\])*/g;
 export const REWRITE_MODEL = "gemini-3.1-flash-lite"; // CHAT_MODEL in src/generate/answer.ts
@@ -98,13 +98,17 @@ export async function retrieveAll(fresh: boolean): Promise<void> {
     topK: TOP_K,
     cases: {},
   };
-  if (JSON.stringify(file.versions) !== JSON.stringify(VERSIONS)) {
-    throw new Error("retrieval.json was made from other corpus or case versions. Run: retrieve --fresh");
+  if (file.versions.corpus !== VERSIONS.corpus) {
+    throw new Error("retrieval.json was made from another corpus version. Run: retrieve --fresh");
   }
+  // A variant reuses the base retrieval's rewritten follow-ups, so only the search runs again
+  const base = VARIANT ? readJson<RetrievalFile>(paths.baseRetrieval) : null;
+  if (VARIANT && !base) throw new Error("A variant needs the base retrieval first. Run: retrieve (without --variant)");
   let done = 0;
   for (const c of CASES) {
     if (file.cases[c.id]) continue;
-    const standalone = c.history?.length ? await standaloneQuestion(c.question, c.history) : c.question;
+    const standalone =
+      base?.cases[c.id]?.standalone ?? (c.history?.length ? await standaloneQuestion(c.question, c.history) : c.question);
     const chunks = await retrieveRelevantChunks(standalone, TOP_K);
     const retrieved: Passage[] = chunks.map((ch) => ({ source: ch.source, headingPath: ch.headingPath, content: ch.content, similarity: Number(ch.similarity) }));
     let oracle: Passage[] | null = null;

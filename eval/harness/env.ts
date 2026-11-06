@@ -27,6 +27,23 @@ if (evalInstance) {
   process.exit(1);
 }
 
+// A retrieval variant, for experiments: how many passages are retrieved, and the similarity floor
+// under which a passage is dropped. Each variant has its own run files, so baseline results are
+// never touched; variants with the same top K share one retrieval file.
+const vi = process.argv.indexOf("--variant");
+export const VARIANT = vi > 0 ? process.argv[vi + 1] : "";
+export const VARIANTS: Record<string, { topK: number; floor: number; retrieval: string }> = {
+  "": { topK: 5, floor: 0.625, retrieval: "" }, // Rem as deployed
+  k8: { topK: 8, floor: 0.625, retrieval: "k8" },
+  f55: { topK: 5, floor: 0.55, retrieval: "" },
+  k8f55: { topK: 8, floor: 0.55, retrieval: "k8" },
+};
+if (!(VARIANT in VARIANTS)) {
+  console.error(`Unknown --variant "${VARIANT}". Known: ${Object.keys(VARIANTS).filter(Boolean).join(", ")}`);
+  process.exit(1);
+}
+export const VARIANT_SPEC = VARIANTS[VARIANT];
+
 // Hard cap on Anthropic spend recorded in results/ledger.jsonl, in US dollars
 export const BUDGET_USD = Number(process.env.EVAL_BUDGET_USD ?? 95);
 export const GEMINI_JUDGE_MODEL = process.env.EVAL_GEMINI_JUDGE ?? "gemini-3.8-flash";

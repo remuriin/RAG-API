@@ -3,7 +3,7 @@
 // from a Claude run, since the judge is a Claude model too and may favour Claude-style answers.
 import { createInterface } from "node:readline/promises";
 import type { RunFile } from "./answer.js";
-import { CASES, FACTS, type Label, paths, readJson, runSlug, spread, writeJson } from "./data.js";
+import { accurate, CASES, FACTS, type Label, paths, readJson, runSlug, spread, writeJson } from "./data.js";
 import type { JudgedFile } from "./judge.js";
 import { kappa } from "./report.js";
 
@@ -52,9 +52,13 @@ export async function handcheck(model: string, size: number): Promise<void> {
     const human = both.map((id) => file.labels[id]);
     const machine = both.map((id) => j.verdicts[id].label);
     const agree = human.filter((x, i) => x === machine[i]).length;
+    const agreeAcc = human.filter((x, i) => accurate(x) === accurate(machine[i])).length;
     const share = agree / Math.max(1, both.length);
-    const gateNote = judge === "claude" && !model.startsWith("claude-") ? (share >= 0.9 ? ". Gate passed." : ". Gate NOT passed: fix the judge prompt before any Claude run.") : "";
-    console.log(`${judge} judge (${j.model}): agrees on ${agree}/${both.length} (${Math.round(share * 100)}%), kappa ${kappa(human, machine).toFixed(2)}${gateNote}`);
+    const isGateModel = model === "gemini-3.1-flash-lite" || model === "claude-haiku-5-5";
+    const gateNote = judge === "claude" && isGateModel ? (both.length >= 25 && share >= 0.9 ? " Gate passed." : " Gate NOT passed: fix the judge prompt or the cases before other models run.") : "";
+    console.log(`${judge} judge (${j.model}):`);
+    console.log(`  exact label (the gate): agrees on ${agree}/${both.length} (${Math.round(share * 100)}%), kappa ${kappa(human, machine).toFixed(2)}.${gateNote}`);
+    console.log(`  accurate or not (for information): agrees on ${agreeAcc}/${both.length} (${Math.round((agreeAcc / Math.max(1, both.length)) * 100)}%)`);
     const off = both.filter((id) => file.labels[id] !== j.verdicts[id].label);
     for (const id of off) console.log(`  ${id}: you ${file.labels[id]}, judge ${j.verdicts[id].label}: ${j.verdicts[id].reasoning.slice(0, 160)}`);
   }
