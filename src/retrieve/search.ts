@@ -5,7 +5,7 @@ import type { RetrievedChunk } from "../types/index.js";
 
 export async function retrieveRelevantChunks(
   question: string,
-  topK: number = 5
+  topK: number = 8
 ): Promise<RetrievedChunk[]> {
   const queryVector = await embedText(question, "RETRIEVAL_QUERY");
   const vectorLiteral = `[${queryVector.join(",")}]`;
