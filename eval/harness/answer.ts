@@ -30,7 +30,8 @@ export interface RunFile {
 export function loadRetrieval(): RetrievalFile {
   const r = readJson<RetrievalFile>(paths.retrieval);
   if (!r) throw new Error('No retrieval yet. Run: npm run eval -- retrieve');
-  if (JSON.stringify(r.versions) !== JSON.stringify(VERSIONS)) throw new Error("retrieval.json is from other corpus or case versions. Run: npm run eval -- retrieve --fresh");
+  // retrieval depends on the corpus and the questions, not on the notes or facts of a case
+  if (r.versions.corpus !== VERSIONS.corpus) throw new Error("retrieval.json is from another corpus version. Run: npm run eval -- retrieve --fresh");
   return r;
 }
 
